@@ -33,7 +33,13 @@ class Command(BaseCommand):
             # 1) Run due activities
             due_ids = list(
                 ActivityTask.objects.filter(
-                    status=ActivityTask.Status.QUEUED, after_time__lte=now
+                    status=ActivityTask.Status.QUEUED,
+                    after_time__lte=now,
+                    execution__status__in=[
+                        WorkflowExecution.Status.PENDING,
+                        WorkflowExecution.Status.RUNNING,
+                        WorkflowExecution.Status.WAITING,
+                    ],
                 )
                 .order_by('updated_at')
                 .values_list('id', flat=True)[:batch]

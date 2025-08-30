@@ -9,10 +9,6 @@ Activity and workflow results must be JSON-serializable.
 
 # TODO
 
-- Add support for signals
-
-- Add support for cancellation
-
 - Add Django admin.py setup for simple view of executions and history
 
 
@@ -42,3 +38,20 @@ You can also send a signal programmatically:
 from django_durable.engine import send_signal
 send_signal(execution_id, "user_clicked", {"clicked": True})
 ```
+
+## Cancellation
+
+- Cancel a workflow via CLI:
+
+```bash
+python manage.py durable_cancel <execution_uuid> --reason "user requested" [--keep-queued]
+```
+
+- In code:
+
+```python
+from django_durable.engine import cancel_workflow
+cancel_workflow(execution_id, reason="user requested")
+```
+
+Cancellation moves the workflow to CANCELED and, by default, marks queued activities as failed so workers will not run them.

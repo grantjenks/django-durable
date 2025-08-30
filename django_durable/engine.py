@@ -255,6 +255,28 @@ def execute_activity(task: ActivityTask):
     if fn is None:
         raise RuntimeError(f'Unknown activity {task.activity_name}')
 
+    # If workflow is not runnable (completed/failed/canceled), don't execute.
+    task.execution.refresh_from_db(fields=['status'])
+    if task.execution.status in (
+        WorkflowExecution.Status.COMPLETED,
+        WorkflowExecution.Status.FAILED,
+        WorkflowExecution.Status.CANCELED,
+    ):
+        task.status = ActivityTask.Status.FAILED
+        if task.execution.status == WorkflowExecution.Status.CANCELED:
+            task.error = 'workflow_canceled'
+        else:
+            task.error = 'workflow_not_runnable'
+        task.finished_at = timezone.now()
+        task.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+        HistoryEvent.objects.create(
+            execution=task.execution,
+            type='activity_failed',
+            pos=task.pos,
+            details={'error': task.error},
+        )
+        return
+
     task.status = ActivityTask.Status.RUNNING
     task.started_at = timezone.now()
     task.attempt += 1
@@ -280,10 +302,15 @@ def execute_activity(task: ActivityTask):
             details={'activity_name': task.activity_name, 'result': result},
         )
 
-        # Nudge workflow runnable again
-        WorkflowExecution.objects.filter(pk=task.execution_id).update(
-            status=WorkflowExecution.Status.PENDING
-        )
+        # Nudge workflow runnable again unless terminal (e.g., canceled)
+        WorkflowExecution.objects.filter(
+            pk=task.execution_id,
+            status__in=[
+                WorkflowExecution.Status.PENDING,
+                WorkflowExecution.Status.RUNNING,
+                WorkflowExecution.Status.WAITING,
+            ],
+        ).update(status=WorkflowExecution.Status.PENDING)
 
     except Exception as e:
         task.error = str(e)
@@ -304,6 +331,53 @@ def execute_activity(task: ActivityTask):
                 pos=task.pos,
                 details={'error': str(e)},
             )
+
+
+def cancel_workflow(execution: Union[WorkflowExecution, str], reason: Optional[str] = None, cancel_queued_activities: bool = True):
+    """Cancel a workflow execution and optionally cancel its queued activities.
+
+    - Sets workflow status to CANCELED if not terminal; records 'workflow_canceled' event.
+    - Marks queued activities as FAILED with error 'workflow_canceled' to prevent execution.
+    """
+    if not isinstance(execution, WorkflowExecution):
+        execution = WorkflowExecution.objects.get(pk=execution)
+    with transaction.atomic():
+        execution.refresh_from_db()
+        if execution.status in (
+            WorkflowExecution.Status.COMPLETED,
+            WorkflowExecution.Status.FAILED,
+            WorkflowExecution.Status.CANCELED,
+        ):
+            return
+        HistoryEvent.objects.create(
+            execution=execution,
+            type='workflow_canceled',
+            pos=999998,
+            details={'reason': reason} if reason else {},
+        )
+        execution.status = WorkflowExecution.Status.CANCELED
+        execution.error = (execution.error or '')
+        if reason:
+            execution.error = (execution.error + '\n' if execution.error else '') + f'Canceled: {reason}'
+        execution.finished_at = timezone.now()
+        execution.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+
+        if cancel_queued_activities:
+            now = timezone.now()
+            qs = ActivityTask.objects.select_for_update().filter(
+                execution=execution, status=ActivityTask.Status.QUEUED
+            )
+            for t in qs:
+                t.status = ActivityTask.Status.FAILED
+                t.error = 'workflow_canceled'
+                t.finished_at = now
+                t.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+                HistoryEvent.objects.create(
+                    execution=execution,
+                    type='activity_failed',
+                    pos=t.pos,
+                    details={'error': 'workflow_canceled'},
+                )
 
 
 def send_signal(execution: Union[WorkflowExecution, str], name: str, payload: Any = None):
