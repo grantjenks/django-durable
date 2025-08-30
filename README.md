@@ -23,7 +23,7 @@ Activity and workflow results must be JSON-serializable.
 # Commands
 
 ```bash
-python manage.py start_workflow onboard_user --input '{"user_id": 7}'
+python manage.py durable_start onboard_user --input '{"user_id": 7}'
 ```
 
 ```bash
