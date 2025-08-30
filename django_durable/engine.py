@@ -4,7 +4,7 @@ from typing import Any, Optional
 from django.db import transaction
 from django.utils import timezone
 
-from .registry import REG
+from .registry import register
 from .models import WorkflowExecution, HistoryEvent, ActivityTask
 
 
@@ -60,7 +60,9 @@ class Context:
                 pos=pos,
                 details={'activity_name': name, 'args': args, 'kwargs': kwargs},
             )
-            max_retries = getattr(REG.activities[name], '_durable_max_retries', 0)
+            max_retries = getattr(
+                register.activities[name], '_durable_max_retries', 0
+            )
             ActivityTask.objects.create(
                 execution=self.execution,
                 activity_name=name,
@@ -79,7 +81,7 @@ class Context:
 
 def _run_workflow_once(exec_obj: WorkflowExecution) -> Optional[Any]:
     """Run the workflow function until it needs to pause or completes."""
-    fn = REG.workflows[exec_obj.workflow_name]
+    fn = register.workflows[exec_obj.workflow_name]
     ctx = Context(execution=exec_obj)
     # Prime ctx.pos = number of already scheduled calls to maintain determinism.
     ctx.pos = HistoryEvent.objects.filter(
@@ -153,9 +155,9 @@ def step_workflow(exec_obj: WorkflowExecution):
 
 def execute_activity(task: ActivityTask):
     """Run one activity and append completion/failure events."""
-    from .registry import REG
+    from .registry import register
 
-    fn = REG.activities.get(task.activity_name)
+    fn = register.activities.get(task.activity_name)
     if fn is None:
         raise RuntimeError(f'Unknown activity {task.activity_name}')
 

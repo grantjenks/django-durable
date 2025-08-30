@@ -5,8 +5,8 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from durable.engine import step_workflow, execute_activity
-from durable.models import WorkflowExecution, ActivityTask
+from django_durable.engine import step_workflow, execute_activity
+from django_durable.models import WorkflowExecution, ActivityTask
 
 
 class Command(BaseCommand):

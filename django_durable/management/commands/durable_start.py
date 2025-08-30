@@ -1,7 +1,7 @@
 import json
 from django.core.management.base import BaseCommand, CommandError
-from durable.models import WorkflowExecution
-from durable.registry import REG
+from django_durable.models import WorkflowExecution
+from django_durable.registry import register
 
 
 class Command(BaseCommand):
@@ -17,9 +17,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **opts):
         name = opts['workflow_name']
-        if name not in REG.workflows:
+        if name not in register.workflows:
             raise CommandError(
-                f"Unknown workflow '{name}'. Registered: {list(REG.workflows)}"
+                f"Unknown workflow '{name}'. Registered: {list(register.workflows)}"
             )
 
         data = json.loads(opts['input'])
