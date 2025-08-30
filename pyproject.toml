@@ -1,0 +1,16 @@
+[project]
+name = "django-durable"
+version = "0.1.0"
+description = "Durable execution framework for Django web apps."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "django",
+]
+
+[tool.setuptools]
+packages = ["django_durable"]
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
