@@ -65,7 +65,7 @@ class ActivityTask(models.Model):
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.QUEUED
     )
-    not_before = models.DateTimeField(default=timezone.now)
+    after_time = models.DateTimeField(default=timezone.now)
     attempt = models.IntegerField(default=0)
     max_attempts = models.IntegerField(default=0)
     result = models.JSONField(null=True, blank=True)
@@ -77,5 +77,5 @@ class ActivityTask(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=['execution', 'status']),
-            models.Index(fields=['status', 'not_before']),
+            models.Index(fields=['status', 'after_time']),
         ]

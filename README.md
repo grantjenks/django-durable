@@ -15,7 +15,6 @@ Activity and workflow results must be JSON-serializable.
 
 - Add Django admin.py setup for simple view of executions and history
 
-- Rename the `not_before` activity field to `after_time`
 
 
 # Commands

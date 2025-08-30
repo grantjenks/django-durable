@@ -63,7 +63,7 @@ class Context:
             fn = register.activities.get(name)
             max_retries = getattr(fn, '_durable_max_retries', 0) if fn else 0
             # For internal sleep, defer until due time instead of immediate run.
-            not_before = timezone.now()
+            after_time = timezone.now()
             if name == '__sleep__':
                 try:
                     seconds = float((args or [0])[0])
@@ -73,7 +73,7 @@ class Context:
                     seconds = 0.0
                 from datetime import timedelta
 
-                not_before = not_before + timedelta(seconds=seconds)
+                after_time = after_time + timedelta(seconds=seconds)
 
             ActivityTask.objects.create(
                 execution=self.execution,
@@ -82,7 +82,7 @@ class Context:
                 args=args,
                 kwargs=kwargs,
                 max_attempts=max_retries,
-                not_before=not_before,
+                after_time=after_time,
             )
         raise NeedsPause()
 
@@ -210,8 +210,8 @@ def execute_activity(task: ActivityTask):
             from datetime import timedelta
 
             task.status = ActivityTask.Status.QUEUED
-            task.not_before = timezone.now() + timedelta(seconds=30 * task.attempt)
-            task.save(update_fields=['status', 'error', 'not_before', 'updated_at'])
+            task.after_time = timezone.now() + timedelta(seconds=30 * task.attempt)
+            task.save(update_fields=['status', 'error', 'after_time', 'updated_at'])
         else:
             task.status = ActivityTask.Status.FAILED
             task.finished_at = timezone.now()

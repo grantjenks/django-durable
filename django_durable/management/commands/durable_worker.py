@@ -33,7 +33,7 @@ class Command(BaseCommand):
             # 1) Run due activities
             due_ids = list(
                 ActivityTask.objects.filter(
-                    status=ActivityTask.Status.QUEUED, not_before__lte=now
+                    status=ActivityTask.Status.QUEUED, after_time__lte=now
                 )
                 .order_by('updated_at')
                 .values_list('id', flat=True)[:batch]
@@ -58,7 +58,7 @@ class Command(BaseCommand):
                     # Recheck current state to avoid double-processing.
                     if (
                         task.status != ActivityTask.Status.QUEUED
-                        or task.not_before > now
+                        or task.after_time > now
                     ):
                         continue
                     execute_activity(task)
