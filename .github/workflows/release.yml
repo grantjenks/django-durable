@@ -27,13 +27,12 @@ jobs:
         uses: astral-sh/setup-uv@v3
 
       - name: Install build backend
-        run: uvx build --version
+        run: uvx --from build pyproject-build --version
 
       - name: Build sdist and wheel
-        run: uvx build
+        run: uvx --from build pyproject-build
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           verbose: true
-
