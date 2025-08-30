@@ -33,3 +33,9 @@ def add(a, b):
 @register.activity()
 def multiply(a, b):
     return {"value": a * b}
+
+
+@register.activity()
+def do_work(i):
+    """Simple activity used for concurrency tests."""
+    return {"i": i}
