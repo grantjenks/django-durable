@@ -60,9 +60,21 @@ class Context:
                 pos=pos,
                 details={'activity_name': name, 'args': args, 'kwargs': kwargs},
             )
-            max_retries = getattr(
-                register.activities[name], '_durable_max_retries', 0
-            )
+            fn = register.activities.get(name)
+            max_retries = getattr(fn, '_durable_max_retries', 0) if fn else 0
+            # For internal sleep, defer until due time instead of immediate run.
+            not_before = timezone.now()
+            if name == '__sleep__':
+                try:
+                    seconds = float((args or [0])[0])
+                except Exception:
+                    seconds = 0.0
+                if seconds < 0:
+                    seconds = 0.0
+                from datetime import timedelta
+
+                not_before = not_before + timedelta(seconds=seconds)
+
             ActivityTask.objects.create(
                 execution=self.execution,
                 activity_name=name,
@@ -70,7 +82,7 @@ class Context:
                 args=args,
                 kwargs=kwargs,
                 max_attempts=max_retries,
-                not_before=timezone.now(),
+                not_before=not_before,
             )
         raise NeedsPause()
 
