@@ -21,6 +21,7 @@ class Register:
         name: Optional[str] = None,
         max_retries: int = 0,
         timeout: Optional[float] = None,
+        heartbeat_timeout: Optional[float] = None,
         retry_policy: Optional["RetryPolicy"] = None,
     ):
         def deco(fn):
@@ -31,6 +32,8 @@ class Register:
             fn._durable_retry_policy = rp
             if timeout is not None:
                 fn._durable_timeout = timeout
+            if heartbeat_timeout is not None:
+                fn._durable_heartbeat_timeout = heartbeat_timeout
             self.activities[name or fn.__name__] = fn
             return fn
 

@@ -1,4 +1,5 @@
 from django_durable.registry import register, RetryPolicy
+from django_durable.engine import activity_heartbeat
 from time import sleep
 
 @register.activity(max_retries=3)
@@ -59,3 +60,18 @@ def flaky(key, fail_times):
         flaky_counters[key] = cnt + 1
         raise ValueError("boom")
     return {"attempts": cnt + 1}
+
+
+@register.activity(heartbeat_timeout=0.1)
+def heartbeat_activity():
+    activity_heartbeat({"beat": 1})
+    sleep(0.05)
+    activity_heartbeat({"beat": 2})
+    sleep(0.05)
+    return {"ok": True}
+
+
+@register.activity(heartbeat_timeout=0.1)
+def no_heartbeat_activity(delay=0.2):
+    sleep(delay)
+    return {"ok": True}
