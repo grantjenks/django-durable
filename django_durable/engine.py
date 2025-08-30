@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Union
 from django.db import transaction
 from django.utils import timezone
 
@@ -90,6 +90,88 @@ class Context:
         """Durable timer implemented as a special internal activity."""
         return self.activity('__sleep__', seconds)
 
+    def wait_signal(self, name: str) -> Any:
+        """Deterministic wait for an external signal.
+        Behavior mirrors activities:
+        - If a signal was already consumed at this position -> return payload.
+        - If a matching enqueued signal exists -> consume it and return payload.
+        - If waiting already recorded -> pause.
+        - Else record wait and pause.
+        """
+        pos = self._bump()
+
+        # 1) If already consumed for this pos, return payload
+        ev_done = (
+            HistoryEvent.objects.filter(
+                execution=self.execution, pos=pos, type='signal_consumed'
+            )
+            .order_by('id')
+            .last()
+        )
+        if ev_done:
+            return ev_done.details.get('payload')
+
+        # 2) Try to consume an enqueued signal
+        with transaction.atomic():
+            # Double-check after acquiring transaction
+            ev_done = (
+                HistoryEvent.objects.filter(
+                    execution=self.execution, pos=pos, type='signal_consumed'
+                )
+                .order_by('id')
+                .last()
+            )
+            if ev_done:
+                return ev_done.details.get('payload')
+
+            # Find earliest enqueued signal of this name not yet consumed
+            enqueued = list(
+                HistoryEvent.objects.filter(
+                    execution=self.execution,
+                    type='signal_enqueued',
+                    details__name=name,
+                )
+                .order_by('id')
+            )
+            enq = None
+            if enqueued:
+                # Build set of consumed enqueued_ids
+                consumed_ids = set(
+                    HistoryEvent.objects.filter(
+                        execution=self.execution, type='signal_consumed'
+                    ).values_list('details__enqueued_id', flat=True)
+                )
+                for e in enqueued:
+                    if e.id not in consumed_ids:
+                        enq = e
+                        break
+
+            if enq is not None:
+                HistoryEvent.objects.create(
+                    execution=self.execution,
+                    type='signal_consumed',
+                    pos=pos,
+                    details={
+                        'name': name,
+                        'payload': enq.details.get('payload'),
+                        'enqueued_id': enq.id,
+                    },
+                )
+                return enq.details.get('payload')
+
+            # 3) Else record wait if first time, then pause
+            waiting_exists = HistoryEvent.objects.filter(
+                execution=self.execution, pos=pos, type='signal_wait'
+            ).exists()
+            if not waiting_exists:
+                HistoryEvent.objects.create(
+                    execution=self.execution,
+                    type='signal_wait',
+                    pos=pos,
+                    details={'name': name},
+                )
+        raise NeedsPause()
+
 
 def _run_workflow_once(exec_obj: WorkflowExecution) -> Optional[Any]:
     """Run the workflow function until it needs to pause or completes."""
@@ -97,7 +179,7 @@ def _run_workflow_once(exec_obj: WorkflowExecution) -> Optional[Any]:
     ctx = Context(execution=exec_obj)
     # Prime ctx.pos = number of already scheduled calls to maintain determinism.
     ctx.pos = HistoryEvent.objects.filter(
-        execution=exec_obj, type='activity_scheduled'
+        execution=exec_obj, type__in=['activity_scheduled', 'signal_wait']
     ).count()
     try:
         return fn(ctx, **(exec_obj.input or {}))
@@ -221,4 +303,29 @@ def execute_activity(task: ActivityTask):
                 type='activity_failed',
                 pos=task.pos,
                 details={'error': str(e)},
+            )
+
+
+def send_signal(execution: Union[WorkflowExecution, str], name: str, payload: Any = None):
+    """Enqueue an external signal for a workflow and mark it runnable.
+
+    - Appends a 'signal_enqueued' HistoryEvent with the given name/payload.
+    - Sets the workflow status to PENDING if it is not terminal.
+    """
+    if not isinstance(execution, WorkflowExecution):
+        execution = WorkflowExecution.objects.get(pk=execution)
+    with transaction.atomic():
+        HistoryEvent.objects.create(
+            execution=execution,
+            type='signal_enqueued',
+            pos=0,
+            details={'name': name, 'payload': payload},
+        )
+        if execution.status not in (
+            WorkflowExecution.Status.COMPLETED,
+            WorkflowExecution.Status.FAILED,
+            WorkflowExecution.Status.CANCELED,
+        ):
+            WorkflowExecution.objects.filter(pk=execution.pk).update(
+                status=WorkflowExecution.Status.PENDING
             )
