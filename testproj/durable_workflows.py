@@ -16,3 +16,14 @@ def onboard_user(ctx, user_id: int):
     # 4) compute score and finish
     score = ctx.activity("compute_score", user_id)
     return {"ok": True, "score": score["score"]}
+
+
+@register.workflow()
+def e2e_flow(ctx, value):
+    # activity
+    res = ctx.activity("echo", value)
+    # immediate timer
+    ctx.sleep(0)
+    # wait for external signal 'go'
+    sig = ctx.wait_signal("go")
+    return {"res": res["value"], "sig": sig}

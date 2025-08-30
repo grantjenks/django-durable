@@ -8,6 +8,11 @@ dependencies = [
     "django",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest~=8.2",
+]
+
 [tool.setuptools]
 packages = ["django_durable"]
 

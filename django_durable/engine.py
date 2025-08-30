@@ -177,10 +177,8 @@ def _run_workflow_once(exec_obj: WorkflowExecution) -> Optional[Any]:
     """Run the workflow function until it needs to pause or completes."""
     fn = register.workflows[exec_obj.workflow_name]
     ctx = Context(execution=exec_obj)
-    # Prime ctx.pos = number of already scheduled calls to maintain determinism.
-    ctx.pos = HistoryEvent.objects.filter(
-        execution=exec_obj, type__in=['activity_scheduled', 'signal_wait']
-    ).count()
+    # Always start from the beginning; deterministic API uses replay + event log.
+    ctx.pos = 0
     try:
         return fn(ctx, **(exec_obj.input or {}))
     except NeedsPause:
@@ -252,8 +250,6 @@ def execute_activity(task: ActivityTask):
     from .registry import register
 
     fn = register.activities.get(task.activity_name)
-    if fn is None:
-        raise RuntimeError(f'Unknown activity {task.activity_name}')
 
     # If workflow is not runnable (completed/failed/canceled), don't execute.
     task.execution.refresh_from_db(fields=['status'])
@@ -288,6 +284,8 @@ def execute_activity(task: ActivityTask):
             # Only run when due; worker should fetch only due tasks.
             result = {'slept': seconds}
         else:
+            if fn is None:
+                raise RuntimeError(f'Unknown activity {task.activity_name}')
             result = fn(*task.args, **task.kwargs)
 
         task.status = ActivityTask.Status.COMPLETED

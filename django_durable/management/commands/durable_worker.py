@@ -19,13 +19,21 @@ class Command(BaseCommand):
             '--tick', type=float, default=0.5, help='Poll interval in seconds.'
         )
         parser.add_argument('--batch', type=int, default=10, help='Max tasks per tick.')
+        parser.add_argument(
+            '--iterations',
+            type=int,
+            default=None,
+            help='Optional number of loop iterations to run (for testing).',
+        )
 
     def handle(self, *args, **opts):
         tick = opts['tick']
         batch = opts['batch']
+        iterations = opts['iterations']
         hostname = socket.gethostname()
         self.stdout.write(self.style.SUCCESS(f'[durable] worker started on {hostname}'))
 
+        loops = 0
         while True:
             now = timezone.now()
             progressed = False
@@ -103,5 +111,8 @@ class Command(BaseCommand):
                         continue
                     step_workflow(wf)
 
+            loops += 1
+            if iterations is not None and loops >= iterations:
+                break
             if not progressed:
                 time.sleep(tick)

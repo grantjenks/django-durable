@@ -17,3 +17,9 @@ def confirm_clicked(user_id: int):
 def compute_score(user_id: int):
     # pure CPU or short IO; return JSON-serializable data
     return {"score": 42}
+
+
+# E2E Test helpers
+@register.activity()
+def echo(value):
+    return {"value": value}
