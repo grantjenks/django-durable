@@ -19,3 +19,8 @@ packages = ["django_durable"]
 [build-system]
 requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest~=8.2",
+]
