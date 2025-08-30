@@ -113,6 +113,48 @@ class Command(BaseCommand):
                         details={'error': 'workflow_timeout'},
                     )
 
+            # 0c) Heartbeat timeouts for running activities
+            hb_ids = list(
+                ActivityTask.objects.filter(
+                    status=ActivityTask.Status.RUNNING,
+                    heartbeat_timeout__isnull=False,
+                ).values_list('id', flat=True)[:batch]
+            )
+            if hb_ids:
+                progressed = True
+            for tid in hb_ids:
+                try:
+                    task = ActivityTask.objects.get(id=tid)
+                except ActivityTask.DoesNotExist:
+                    continue
+                from datetime import timedelta
+
+                hb_at = task.heartbeat_at or task.started_at or now
+                if (
+                    task.heartbeat_timeout is not None
+                    and hb_at + timedelta(seconds=float(task.heartbeat_timeout)) <= now
+                ):
+                    task.status = ActivityTask.Status.TIMED_OUT
+                    task.error = 'heartbeat_timeout'
+                    task.finished_at = now
+                    task.save(
+                        update_fields=['status', 'error', 'finished_at', 'updated_at']
+                    )
+                    HistoryEvent.objects.create(
+                        execution=task.execution,
+                        type='activity_timed_out',
+                        pos=task.pos,
+                        details={'error': 'heartbeat_timeout'},
+                    )
+                    WorkflowExecution.objects.filter(
+                        pk=task.execution_id,
+                        status__in=[
+                            WorkflowExecution.Status.PENDING,
+                            WorkflowExecution.Status.RUNNING,
+                            WorkflowExecution.Status.WAITING,
+                        ],
+                    ).update(status=WorkflowExecution.Status.PENDING)
+
             # 1) Run due activities
             due_ids = list(
                 ActivityTask.objects.filter(

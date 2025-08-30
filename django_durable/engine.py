@@ -1,11 +1,15 @@
 from contextlib import contextmanager
 from dataclasses import dataclass
+import threading
 from typing import Any, Optional, Union
 from django.db import transaction
 from django.utils import timezone
 
 from .registry import register
 from .models import WorkflowExecution, HistoryEvent, ActivityTask
+
+
+_current_activity = threading.local()
 
 
 class NeedsPause(Exception):
@@ -107,6 +111,7 @@ class Context:
         # 3) First-time schedule
         with transaction.atomic():
             timeout = kwargs.pop('schedule_to_close_timeout', None)
+            heartbeat = kwargs.pop('heartbeat_timeout', None)
             fn = register.activities.get(name)
             policy_obj = getattr(fn, '_durable_retry_policy', None) if fn else None
             policy_dict = (
@@ -114,6 +119,8 @@ class Context:
             )
             if timeout is None and fn is not None:
                 timeout = getattr(fn, '_durable_timeout', None)
+            if heartbeat is None and fn is not None:
+                heartbeat = getattr(fn, '_durable_heartbeat_timeout', None)
             HistoryEvent.objects.create(
                 execution=self.execution,
                 type='activity_scheduled',
@@ -123,6 +130,7 @@ class Context:
                     'args': args,
                     'kwargs': kwargs,
                     'timeout': timeout,
+                    'heartbeat_timeout': heartbeat,
                     'retry_policy': policy_dict,
                 },
             )
@@ -154,6 +162,7 @@ class Context:
                 after_time=after_time,
                 expires_at=expires_at,
                 retry_policy=policy_dict,
+                heartbeat_timeout=heartbeat,
             )
         raise NeedsPause()
 
@@ -346,11 +355,16 @@ def execute_activity(task: ActivityTask):
         return
 
     task.status = ActivityTask.Status.RUNNING
-    task.started_at = timezone.now()
+    now = timezone.now()
+    task.started_at = now
+    task.heartbeat_at = now
     task.attempt += 1
-    task.save(update_fields=['status', 'started_at', 'attempt', 'updated_at'])
+    task.save(
+        update_fields=['status', 'started_at', 'heartbeat_at', 'attempt', 'updated_at']
+    )
 
     try:
+        _current_activity.task_id = str(task.id)
         if task.activity_name == '__sleep__':
             seconds = (task.args or [0])[0]
             # Only run when due; worker should fetch only due tasks.
@@ -414,6 +428,20 @@ def execute_activity(task: ActivityTask):
                 pos=task.pos,
                 details={'error': str(e)},
             )
+    finally:
+        _current_activity.task_id = None
+
+
+def activity_heartbeat(details: Any = None):
+    """Record a heartbeat for the currently running activity."""
+    task_id = getattr(_current_activity, 'task_id', None)
+    if not task_id:
+        raise RuntimeError('No activity is currently running')
+    now = timezone.now()
+    fields = {'heartbeat_at': now}
+    if details is not None:
+        fields['heartbeat_details'] = details
+    ActivityTask.objects.filter(id=task_id).update(**fields)
 
 
 def cancel_workflow(execution: Union[WorkflowExecution, str], reason: Optional[str] = None, cancel_queued_activities: bool = True):

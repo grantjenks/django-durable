@@ -60,3 +60,14 @@ def activity_timeout_flow(ctx):
 def retry_flow(ctx, key: str, fail_times: int):
     res = ctx.activity("flaky", key, fail_times)
     return {"attempts": res["attempts"]}
+
+
+@register.workflow()
+def heartbeat_flow(ctx):
+    res = ctx.activity("heartbeat_activity")
+    return res
+
+
+@register.workflow()
+def heartbeat_timeout_flow(ctx):
+    ctx.activity("no_heartbeat_activity")
