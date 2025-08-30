@@ -71,3 +71,15 @@ def heartbeat_flow(ctx):
 @register.workflow()
 def heartbeat_timeout_flow(ctx):
     ctx.activity("no_heartbeat_activity")
+
+
+@register.workflow()
+def child_increment_workflow(ctx, x: int):
+    res = ctx.activity("add", x, 1)
+    return {"y": res["value"]}
+
+
+@register.workflow()
+def parent_child_workflow(ctx, x: int):
+    child = ctx.workflow("child_increment_workflow", x=x)
+    return {"child": child}

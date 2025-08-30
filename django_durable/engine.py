@@ -252,6 +252,69 @@ class Context:
                 )
         raise NeedsPause()
 
+    def workflow(self, name: str, timeout: Optional[float] = None, **input) -> Any:
+        """Start and wait for a child workflow.
+
+        Mirrors the activity API:
+        - If a completion/failed event exists for this position, return/raise.
+        - If already scheduled but not finished, pause.
+        - Otherwise schedule the child workflow and pause.
+        """
+
+        pos = self._bump()
+
+        ev_done = (
+            HistoryEvent.objects.filter(
+                execution=self.execution,
+                pos=pos,
+                type__in=[
+                    'child_workflow_completed',
+                    'child_workflow_failed',
+                ],
+            )
+            .order_by('id')
+            .last()
+        )
+        if ev_done:
+            if ev_done.type == 'child_workflow_failed':
+                raise RuntimeError(ev_done.details.get('error', 'child_workflow_failed'))
+            return ev_done.details.get('result')
+
+        scheduled = HistoryEvent.objects.filter(
+            execution=self.execution, pos=pos, type='child_workflow_scheduled'
+        ).exists()
+        if scheduled:
+            raise NeedsPause()
+
+        with transaction.atomic():
+            fn = register.workflows.get(name)
+            if timeout is None and fn is not None:
+                timeout = getattr(fn, '_durable_timeout', None)
+            expires_at = None
+            if timeout is not None:
+                from datetime import timedelta
+
+                expires_at = timezone.now() + timedelta(seconds=float(timeout))
+            child = WorkflowExecution.objects.create(
+                workflow_name=name,
+                input=input,
+                expires_at=expires_at,
+                parent=self.execution,
+                parent_pos=pos,
+            )
+            HistoryEvent.objects.create(
+                execution=self.execution,
+                type='child_workflow_scheduled',
+                pos=pos,
+                details={
+                    'workflow_name': name,
+                    'input': input,
+                    'child_id': str(child.id),
+                    'timeout': timeout,
+                },
+            )
+        raise NeedsPause()
+
 
 def _run_workflow_once(exec_obj: WorkflowExecution) -> Optional[Any]:
     """Run the workflow function until it needs to pause or completes."""
@@ -263,6 +326,27 @@ def _run_workflow_once(exec_obj: WorkflowExecution) -> Optional[Any]:
         return fn(ctx, **(exec_obj.input or {}))
     except NeedsPause:
         return None
+
+
+def _notify_parent(exec_obj: WorkflowExecution, event_type: str, details: dict):
+    """Append an event to the parent workflow and mark it runnable."""
+    if not exec_obj.parent_id:
+        return
+    parent = exec_obj.parent
+    HistoryEvent.objects.create(
+        execution=parent,
+        type=event_type,
+        pos=exec_obj.parent_pos or 0,
+        details={"child_id": str(exec_obj.id), **details},
+    )
+    WorkflowExecution.objects.filter(
+        pk=parent.pk,
+        status__in=[
+            WorkflowExecution.Status.PENDING,
+            WorkflowExecution.Status.RUNNING,
+            WorkflowExecution.Status.WAITING,
+        ],
+    ).update(status=WorkflowExecution.Status.PENDING)
 
 
 def step_workflow(exec_obj: WorkflowExecution):
@@ -302,6 +386,7 @@ def step_workflow(exec_obj: WorkflowExecution):
             exec_obj.save(
                 update_fields=['status', 'error', 'finished_at', 'updated_at']
             )
+            _notify_parent(exec_obj, 'child_workflow_failed', {'error': str(e)})
         return
 
     if result is None:
@@ -323,6 +408,7 @@ def step_workflow(exec_obj: WorkflowExecution):
         exec_obj.result = result
         exec_obj.finished_at = timezone.now()
         exec_obj.save(update_fields=['status', 'result', 'finished_at', 'updated_at'])
+        _notify_parent(exec_obj, 'child_workflow_completed', {'result': result})
 
 
 def execute_activity(task: ActivityTask):
@@ -490,6 +576,22 @@ def cancel_workflow(execution: Union[WorkflowExecution, str], reason: Optional[s
                     pos=t.pos,
                     details={'error': 'workflow_canceled'},
                 )
+
+        _notify_parent(execution, 'child_workflow_failed', {'error': 'workflow_canceled'})
+
+    for child in WorkflowExecution.objects.filter(
+        parent=execution,
+        status__in=[
+            WorkflowExecution.Status.PENDING,
+            WorkflowExecution.Status.RUNNING,
+            WorkflowExecution.Status.WAITING,
+        ],
+    ):
+        cancel_workflow(
+            child,
+            reason=reason or 'parent_canceled',
+            cancel_queued_activities=cancel_queued_activities,
+        )
 
 
 def send_signal(execution: Union[WorkflowExecution, str], name: str, payload: Any = None):
