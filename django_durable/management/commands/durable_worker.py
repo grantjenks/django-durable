@@ -5,7 +5,7 @@ from django.db import DatabaseError
 from django.utils import timezone
 
 from django_durable.engine import step_workflow, execute_activity
-from django_durable.models import WorkflowExecution, ActivityTask
+from django_durable.models import WorkflowExecution, ActivityTask, HistoryEvent
 
 
 class Command(BaseCommand):
@@ -34,6 +34,84 @@ class Command(BaseCommand):
         while True:
             now = timezone.now()
             progressed = False
+
+            # 0) Timeout queued activities
+            timed_ids = list(
+                ActivityTask.objects.filter(
+                    status=ActivityTask.Status.QUEUED,
+                    expires_at__isnull=False,
+                    expires_at__lte=now,
+                ).values_list('id', flat=True)[:batch]
+            )
+            if timed_ids:
+                progressed = True
+            for tid in timed_ids:
+                try:
+                    task = ActivityTask.objects.get(id=tid)
+                except ActivityTask.DoesNotExist:
+                    continue
+                task.status = ActivityTask.Status.TIMED_OUT
+                task.error = 'activity_timeout'
+                task.finished_at = now
+                task.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+                HistoryEvent.objects.create(
+                    execution=task.execution,
+                    type='activity_timed_out',
+                    pos=task.pos,
+                    details={'error': 'activity_timeout'},
+                )
+                WorkflowExecution.objects.filter(
+                    pk=task.execution_id,
+                    status__in=[
+                        WorkflowExecution.Status.PENDING,
+                        WorkflowExecution.Status.RUNNING,
+                        WorkflowExecution.Status.WAITING,
+                    ],
+                ).update(status=WorkflowExecution.Status.PENDING)
+
+            # 0b) Timeout workflows
+            wf_timeouts = list(
+                WorkflowExecution.objects.filter(
+                    status__in=[
+                        WorkflowExecution.Status.PENDING,
+                        WorkflowExecution.Status.RUNNING,
+                        WorkflowExecution.Status.WAITING,
+                    ],
+                    expires_at__isnull=False,
+                    expires_at__lte=now,
+                ).values_list('id', flat=True)[:batch]
+            )
+            if wf_timeouts:
+                progressed = True
+            for wid in wf_timeouts:
+                try:
+                    wf = WorkflowExecution.objects.get(id=wid)
+                except WorkflowExecution.DoesNotExist:
+                    continue
+                HistoryEvent.objects.create(
+                    execution=wf,
+                    type='workflow_timed_out',
+                    pos=999998,
+                    details={'error': 'workflow_timeout'},
+                )
+                wf.status = WorkflowExecution.Status.TIMED_OUT
+                wf.error = 'workflow_timeout'
+                wf.finished_at = now
+                wf.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+                qs = ActivityTask.objects.select_for_update().filter(
+                    execution=wf, status=ActivityTask.Status.QUEUED
+                )
+                for t in qs:
+                    t.status = ActivityTask.Status.FAILED
+                    t.error = 'workflow_timeout'
+                    t.finished_at = now
+                    t.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+                    HistoryEvent.objects.create(
+                        execution=wf,
+                        type='activity_failed',
+                        pos=t.pos,
+                        details={'error': 'workflow_timeout'},
+                    )
 
             # 1) Run due activities
             due_ids = list(

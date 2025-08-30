@@ -11,6 +11,7 @@ class WorkflowExecution(models.Model):
         COMPLETED = 'COMPLETED'
         FAILED = 'FAILED'
         CANCELED = 'CANCELED'
+        TIMED_OUT = 'TIMED_OUT'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workflow_name = models.CharField(max_length=200)
@@ -22,6 +23,7 @@ class WorkflowExecution(models.Model):
     error = models.TextField(null=True, blank=True)
     started_at = models.DateTimeField(default=timezone.now)
     finished_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
@@ -53,6 +55,7 @@ class ActivityTask(models.Model):
         RUNNING = 'RUNNING'
         COMPLETED = 'COMPLETED'
         FAILED = 'FAILED'
+        TIMED_OUT = 'TIMED_OUT'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     execution = models.ForeignKey(
@@ -66,8 +69,10 @@ class ActivityTask(models.Model):
         max_length=20, choices=Status.choices, default=Status.QUEUED
     )
     after_time = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField(null=True, blank=True)
     attempt = models.IntegerField(default=0)
     max_attempts = models.IntegerField(default=0)
+    retry_policy = models.JSONField(default=dict, blank=True)
     result = models.JSONField(null=True, blank=True)
     error = models.TextField(null=True, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)

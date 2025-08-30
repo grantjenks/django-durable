@@ -1,4 +1,4 @@
-from django_durable.registry import register
+from django_durable.registry import register, RetryPolicy
 from time import sleep
 
 @register.activity(max_retries=3)
@@ -39,3 +39,23 @@ def multiply(a, b):
 def do_work(i):
     """Simple activity used for concurrency tests."""
     return {"i": i}
+
+
+flaky_counters = {}
+
+
+@register.activity(
+    retry_policy=RetryPolicy(
+        initial_interval=0.1,
+        backoff_coefficient=2.0,
+        maximum_interval=1.0,
+        maximum_attempts=3,
+    )
+)
+def flaky(key, fail_times):
+    """Activity that fails a given number of times before succeeding."""
+    cnt = flaky_counters.get(key, 0)
+    if cnt < fail_times:
+        flaky_counters[key] = cnt + 1
+        raise ValueError("boom")
+    return {"attempts": cnt + 1}

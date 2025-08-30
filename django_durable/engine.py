@@ -35,13 +35,17 @@ class Context:
             HistoryEvent.objects.filter(
                 execution=self.execution,
                 pos=pos,
-                type__in=('activity_completed', 'activity_failed'),
+                type__in=(
+                    'activity_completed',
+                    'activity_failed',
+                    'activity_timed_out',
+                ),
             )
             .order_by('id')
             .last()
         )
         if ev_done:
-            if ev_done.type == 'activity_failed':
+            if ev_done.type in ('activity_failed', 'activity_timed_out'):
                 raise RuntimeError(ev_done.details.get('error', 'activity_failed'))
             return ev_done.details.get('result')
 
@@ -54,14 +58,26 @@ class Context:
 
         # 3) First-time schedule
         with transaction.atomic():
+            timeout = kwargs.pop('schedule_to_close_timeout', None)
+            fn = register.activities.get(name)
+            policy_obj = getattr(fn, '_durable_retry_policy', None) if fn else None
+            policy_dict = (
+                policy_obj.asdict() if policy_obj else {'maximum_attempts': getattr(fn, '_durable_max_retries', 0)}
+            )
+            if timeout is None and fn is not None:
+                timeout = getattr(fn, '_durable_timeout', None)
             HistoryEvent.objects.create(
                 execution=self.execution,
                 type='activity_scheduled',
                 pos=pos,
-                details={'activity_name': name, 'args': args, 'kwargs': kwargs},
+                details={
+                    'activity_name': name,
+                    'args': args,
+                    'kwargs': kwargs,
+                    'timeout': timeout,
+                    'retry_policy': policy_dict,
+                },
             )
-            fn = register.activities.get(name)
-            max_retries = getattr(fn, '_durable_max_retries', 0) if fn else 0
             # For internal sleep, defer until due time instead of immediate run.
             after_time = timezone.now()
             if name == '__sleep__':
@@ -74,6 +90,11 @@ class Context:
                 from datetime import timedelta
 
                 after_time = after_time + timedelta(seconds=seconds)
+            expires_at = None
+            if timeout is not None:
+                from datetime import timedelta
+
+                expires_at = timezone.now() + timedelta(seconds=float(timeout))
 
             ActivityTask.objects.create(
                 execution=self.execution,
@@ -81,8 +102,10 @@ class Context:
                 pos=pos,
                 args=args,
                 kwargs=kwargs,
-                max_attempts=max_retries,
+                max_attempts=policy_dict.get('maximum_attempts', 0),
                 after_time=after_time,
+                expires_at=expires_at,
+                retry_policy=policy_dict,
             )
         raise NeedsPause()
 
@@ -257,6 +280,7 @@ def execute_activity(task: ActivityTask):
         WorkflowExecution.Status.COMPLETED,
         WorkflowExecution.Status.FAILED,
         WorkflowExecution.Status.CANCELED,
+        WorkflowExecution.Status.TIMED_OUT,
     ):
         task.status = ActivityTask.Status.FAILED
         if task.execution.status == WorkflowExecution.Status.CANCELED:
@@ -312,12 +336,25 @@ def execute_activity(task: ActivityTask):
 
     except Exception as e:
         task.error = str(e)
-        if task.attempt <= task.max_attempts:
-            # Simple linear backoff: +30s per attempt
+        policy = task.retry_policy or {}
+        error_type = e.__class__.__name__
+        non_retry = policy.get('non_retryable_error_types', [])
+        max_attempts = policy.get('maximum_attempts', 0)
+        should_retry = error_type not in non_retry and (
+            max_attempts == 0 or task.attempt < max_attempts
+        )
+        if should_retry:
             from datetime import timedelta
 
+            interval = policy.get('initial_interval', 1.0) * (
+                policy.get('backoff_coefficient', 2.0) ** (task.attempt - 1)
+            )
+            max_interval = policy.get('maximum_interval')
+            if max_interval is not None:
+                interval = min(interval, max_interval)
+
             task.status = ActivityTask.Status.QUEUED
-            task.after_time = timezone.now() + timedelta(seconds=30 * task.attempt)
+            task.after_time = timezone.now() + timedelta(seconds=interval)
             task.save(update_fields=['status', 'error', 'after_time', 'updated_at'])
         else:
             task.status = ActivityTask.Status.FAILED
@@ -345,6 +382,7 @@ def cancel_workflow(execution: Union[WorkflowExecution, str], reason: Optional[s
             WorkflowExecution.Status.COMPLETED,
             WorkflowExecution.Status.FAILED,
             WorkflowExecution.Status.CANCELED,
+            WorkflowExecution.Status.TIMED_OUT,
         ):
             return
         HistoryEvent.objects.create(
@@ -397,6 +435,7 @@ def send_signal(execution: Union[WorkflowExecution, str], name: str, payload: An
             WorkflowExecution.Status.COMPLETED,
             WorkflowExecution.Status.FAILED,
             WorkflowExecution.Status.CANCELED,
+            WorkflowExecution.Status.TIMED_OUT,
         ):
             WorkflowExecution.objects.filter(pk=execution.pk).update(
                 status=WorkflowExecution.Status.PENDING

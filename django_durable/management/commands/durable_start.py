@@ -1,5 +1,7 @@
 import json
+from datetime import timedelta
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 from django_durable.models import WorkflowExecution
 from django_durable.registry import register
 
@@ -14,6 +16,12 @@ class Command(BaseCommand):
             default='{}',
             help='JSON object for workflow kwargs, e.g. \'{"user_id": 1}\'',
         )
+        parser.add_argument(
+            '--timeout',
+            type=float,
+            default=None,
+            help='Optional workflow timeout in seconds.',
+        )
 
     def handle(self, *args, **opts):
         name = opts['workflow_name']
@@ -23,5 +31,16 @@ class Command(BaseCommand):
             )
 
         data = json.loads(opts['input'])
-        wf = WorkflowExecution.objects.create(workflow_name=name, input=data)
+        fn = register.workflows[name]
+        timeout = opts['timeout']
+        if timeout is None:
+            timeout = getattr(fn, '_durable_timeout', None)
+        expires_at = (
+            timezone.now() + timedelta(seconds=float(timeout))
+            if timeout is not None
+            else None
+        )
+        wf = WorkflowExecution.objects.create(
+            workflow_name=name, input=data, expires_at=expires_at
+        )
         self.stdout.write(self.style.SUCCESS(str(wf.id)))
