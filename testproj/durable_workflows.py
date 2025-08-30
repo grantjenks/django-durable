@@ -27,3 +27,16 @@ def e2e_flow(ctx, value):
     # wait for external signal 'go'
     sig = ctx.wait_signal("go")
     return {"res": res["value"], "sig": sig}
+
+
+@register.workflow()
+def complex_flow(ctx, value):
+    # chain multiple activities with timers and a signal
+    first = ctx.activity("add", value, 5)
+    ctx.sleep(0)
+    second = ctx.activity("multiply", first["value"], 2)
+    ctx.sleep(0)
+    sig = ctx.wait_signal("finish")
+    ctx.sleep(0)
+    final = ctx.activity("add", second["value"], sig["add"])
+    return {"result": final["value"], "sig": sig}

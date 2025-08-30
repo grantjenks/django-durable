@@ -121,3 +121,40 @@ def test_cancel_marks_workflow_and_tasks(tmp_path):
     statuses = read_activity_statuses(exec_id)
     # Either 0 (if no task yet) or all failed
     assert all(s == "FAILED" for s in statuses)
+
+
+def test_complex_flow_runs_end_to_end(tmp_path):
+    # Start complex workflow
+    out = run_manage(
+        "durable_start",
+        "complex_flow",
+        "--input",
+        json.dumps({"value": 2}),
+    )
+    exec_id = out.splitlines()[-1].strip()
+    assert exec_id
+
+    # Run worker to progress through first activities and reach signal wait
+    run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "20")
+
+    status, result = read_workflow(exec_id)
+    assert status == "WAITING"
+    assert result is None
+
+    # Send signal and resume workflow to completion
+    run_manage(
+        "durable_signal",
+        exec_id,
+        "finish",
+        "--input",
+        json.dumps({"add": 3}),
+    )
+    run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "20")
+
+    status, result = read_workflow(exec_id)
+    assert status == "COMPLETED"
+    assert result == {"result": 17, "sig": {"add": 3}}
+
+    statuses = read_activity_statuses(exec_id)
+    assert len(statuses) == 6
+    assert all(s == "COMPLETED" for s in statuses)

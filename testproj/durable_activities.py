@@ -23,3 +23,13 @@ def compute_score(user_id: int):
 @register.activity()
 def echo(value):
     return {"value": value}
+
+
+@register.activity()
+def add(a, b):
+    return {"value": a + b}
+
+
+@register.activity()
+def multiply(a, b):
+    return {"value": a * b}
