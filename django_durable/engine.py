@@ -22,6 +22,54 @@ class Context:
         self.pos += 1
         return p
 
+    def get_version(self, change_id: str, version: int) -> int:
+        """Record or retrieve a deterministic version marker.
+
+        The first time a workflow execution reaches this call position it
+        appends a ``version_marker`` HistoryEvent storing ``change_id`` and
+        ``version``.  On replay the stored value is returned ensuring the
+        workflow continues executing the same code path even if the workflow
+        definition changes between deployments.
+        """
+
+        pos = self._bump()
+        ev = (
+            HistoryEvent.objects.filter(
+                execution=self.execution, pos=pos, type='version_marker'
+            )
+            .order_by('id')
+            .last()
+        )
+        if ev:
+            return ev.details.get('version')
+        HistoryEvent.objects.create(
+            execution=self.execution,
+            type='version_marker',
+            pos=pos,
+            details={'change_id': change_id, 'version': version},
+        )
+        return version
+
+    def patched(self, change_id: str) -> bool:
+        """Convenience wrapper for feature flags that may be removed later.
+
+        Uses ``get_version`` under the hood to record a patch marker so that
+        once all executions have moved past the old code path the patch can be
+        safely removed while preserving determinism.
+        """
+
+        return self.get_version(f'patch:{change_id}', 1) >= 1
+
+    def deprecate_patch(self, change_id: str):
+        """Record that a previously patched section has been removed.
+
+        This is a no-op for the workflow logic but ensures a version marker
+        exists so that replay of historical executions remains deterministic
+        after the patch is removed from code.
+        """
+
+        self.get_version(f'patch:{change_id}', 1)
+
     def activity(self, name: str, *args, **kwargs) -> Any:
         """Deterministic activity call with replay:
         - If completed event exists for this pos -> return its result.
