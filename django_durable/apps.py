@@ -9,4 +9,4 @@ class DjangoDurableConfig(AppConfig):
     def ready(self):
         # Auto-discover user-defined workflows/activities
         autodiscover_modules('durable_workflows')
-        autodiscover_modules('durable_tasks')
+        autodiscover_modules('durable_activities')
