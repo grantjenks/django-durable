@@ -7,12 +7,6 @@ Workflows are ordinary Python functions using `ctx.activity()` and `ctx.sleep()`
 Activity and workflow results must be JSON-serializable.
 
 
-# TODO
-
-- Add Django admin.py setup for simple view of executions and history
-
-
-
 # Commands
 
 ```bash
