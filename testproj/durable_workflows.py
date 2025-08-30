@@ -40,3 +40,12 @@ def complex_flow(ctx, value):
     ctx.sleep(0)
     final = ctx.activity("add", second["value"], sig["add"])
     return {"result": final["value"], "sig": sig}
+
+
+@register.workflow()
+def sleep_work_loop(ctx, loops: int, sleep: float):
+    """Workflow that alternates between sleeping and doing trivial work."""
+    for i in range(loops):
+        ctx.sleep(sleep)
+        ctx.activity("do_work", i)
+    return {"done": loops}

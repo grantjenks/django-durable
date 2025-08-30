@@ -1,10 +1,7 @@
 import socket
 import time
-from datetime import timedelta
 from django.core.management.base import BaseCommand
-from django.db import transaction
 from django.db import DatabaseError
-from django.db.utils import NotSupportedError
 from django.utils import timezone
 
 from django_durable.engine import step_workflow, execute_activity
@@ -55,27 +52,25 @@ class Command(BaseCommand):
             if due_ids:
                 progressed = True
             for tid in due_ids:
-                with transaction.atomic():
-                    # Attempt to lock the row if backend supports it; fall back gracefully.
-                    qs = ActivityTask.objects.filter(id=tid)
-                    task = None
-                    try:
-                        task = qs.select_for_update(skip_locked=True).first()
-                    except (NotSupportedError, DatabaseError):
-                        try:
-                            task = qs.select_for_update().first()
-                        except (NotSupportedError, DatabaseError):
-                            task = qs.first()
-
-                    if not task:
-                        continue
-                    # Recheck current state to avoid double-processing.
-                    if (
-                        task.status != ActivityTask.Status.QUEUED
-                        or task.after_time > now
-                    ):
-                        continue
+                # Claim the task atomically so other workers skip it.
+                claimed = (
+                    ActivityTask.objects.filter(
+                        id=tid,
+                        status=ActivityTask.Status.QUEUED,
+                        after_time__lte=now,
+                    ).update(status=ActivityTask.Status.RUNNING)
+                )
+                if not claimed:
+                    continue
+                try:
+                    task = ActivityTask.objects.get(id=tid)
                     execute_activity(task)
+                except DatabaseError:
+                    # Revert claim so another worker can retry.
+                    ActivityTask.objects.filter(id=tid).update(
+                        status=ActivityTask.Status.QUEUED
+                    )
+                    continue
 
             # 2) Advance workflows
             runnable_ids = list(
@@ -91,25 +86,24 @@ class Command(BaseCommand):
             if runnable_ids:
                 progressed = True
             for wid in runnable_ids:
-                with transaction.atomic():
-                    qs = WorkflowExecution.objects.filter(id=wid)
-                    wf = None
-                    try:
-                        wf = qs.select_for_update(skip_locked=True).first()
-                    except (NotSupportedError, DatabaseError):
-                        try:
-                            wf = qs.select_for_update().first()
-                        except (NotSupportedError, DatabaseError):
-                            wf = qs.first()
-
-                    if not wf:
-                        continue
-                    if wf.status not in (
-                        WorkflowExecution.Status.PENDING,
-                        WorkflowExecution.Status.RUNNING,
-                    ):
-                        continue
+                # Only run if we can transition PENDING -> RUNNING. If another
+                # worker grabbed it first, the update returns 0 and we skip.
+                claimed = (
+                    WorkflowExecution.objects.filter(
+                        id=wid,
+                        status=WorkflowExecution.Status.PENDING,
+                    ).update(status=WorkflowExecution.Status.RUNNING)
+                )
+                if not claimed:
+                    continue
+                try:
+                    wf = WorkflowExecution.objects.get(id=wid)
                     step_workflow(wf)
+                except DatabaseError:
+                    WorkflowExecution.objects.filter(id=wid).update(
+                        status=WorkflowExecution.Status.PENDING
+                    )
+                    continue
 
             loops += 1
             if iterations is not None and loops >= iterations:
