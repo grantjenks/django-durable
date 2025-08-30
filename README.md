@@ -9,8 +9,6 @@ Activity and workflow results must be JSON-serializable.
 
 # TODO
 
-- The worker currently uses `SELECT … FOR UPDATE SKIP LOCKED` to avoid thundering herds. Update this so it's used if postgres is the database, else not.
-
 - Add support for signals
 
 - Add support for cancellation

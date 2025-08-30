@@ -3,6 +3,8 @@ import time
 from datetime import timedelta
 from django.core.management.base import BaseCommand
 from django.db import transaction
+from django.db import DatabaseError
+from django.db.utils import NotSupportedError
 from django.utils import timezone
 
 from django_durable.engine import step_workflow, execute_activity
@@ -29,37 +31,65 @@ class Command(BaseCommand):
             progressed = False
 
             # 1) Run due activities
-            due = list(
-                ActivityTask.objects.select_for_update(skip_locked=True)
-                .filter(status=ActivityTask.Status.QUEUED, not_before__lte=now)
-                .order_by('updated_at')[:batch]
+            due_ids = list(
+                ActivityTask.objects.filter(
+                    status=ActivityTask.Status.QUEUED, not_before__lte=now
+                )
+                .order_by('updated_at')
+                .values_list('id', flat=True)[:batch]
             )
-            if due:
+            if due_ids:
                 progressed = True
-            for t in due:
+            for tid in due_ids:
                 with transaction.atomic():
-                    # Lock row
-                    t.refresh_from_db()
-                    if t.status != ActivityTask.Status.QUEUED or t.not_before > now:
+                    # Attempt to lock the row if backend supports it; fall back gracefully.
+                    qs = ActivityTask.objects.filter(id=tid)
+                    task = None
+                    try:
+                        task = qs.select_for_update(skip_locked=True).first()
+                    except (NotSupportedError, DatabaseError):
+                        try:
+                            task = qs.select_for_update().first()
+                        except (NotSupportedError, DatabaseError):
+                            task = qs.first()
+
+                    if not task:
                         continue
-                    execute_activity(t)
+                    # Recheck current state to avoid double-processing.
+                    if (
+                        task.status != ActivityTask.Status.QUEUED
+                        or task.not_before > now
+                    ):
+                        continue
+                    execute_activity(task)
 
             # 2) Advance workflows
-            runnables = list(
-                WorkflowExecution.objects.select_for_update(skip_locked=True)
-                .filter(
+            runnable_ids = list(
+                WorkflowExecution.objects.filter(
                     status__in=[
                         WorkflowExecution.Status.PENDING,
                         WorkflowExecution.Status.RUNNING,
                     ]
                 )
-                .order_by('updated_at')[:batch]
+                .order_by('updated_at')
+                .values_list('id', flat=True)[:batch]
             )
-            if runnables:
+            if runnable_ids:
                 progressed = True
-            for wf in runnables:
+            for wid in runnable_ids:
                 with transaction.atomic():
-                    wf.refresh_from_db()
+                    qs = WorkflowExecution.objects.filter(id=wid)
+                    wf = None
+                    try:
+                        wf = qs.select_for_update(skip_locked=True).first()
+                    except (NotSupportedError, DatabaseError):
+                        try:
+                            wf = qs.select_for_update().first()
+                        except (NotSupportedError, DatabaseError):
+                            wf = qs.first()
+
+                    if not wf:
+                        continue
                     if wf.status not in (
                         WorkflowExecution.Status.PENDING,
                         WorkflowExecution.Status.RUNNING,
