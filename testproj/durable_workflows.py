@@ -49,3 +49,14 @@ def sleep_work_loop(ctx, loops: int, sleep: float):
         ctx.sleep(sleep)
         ctx.activity("do_work", i)
     return {"done": loops}
+
+
+@register.workflow()
+def activity_timeout_flow(ctx):
+    ctx.activity("echo", "hi", schedule_to_close_timeout=0)
+
+
+@register.workflow()
+def retry_flow(ctx, key: str, fail_times: int):
+    res = ctx.activity("flaky", key, fail_times)
+    return {"attempts": res["attempts"]}
