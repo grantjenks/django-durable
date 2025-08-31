@@ -64,3 +64,21 @@ cancel_workflow(execution_id, reason="user requested")
 ```
 
 Cancellation moves the workflow to CANCELED and, by default, marks queued activities as failed so workers will not run them.
+
+## Benchmark
+
+The repository includes a lightweight benchmark script that measures the
+throughput of the simple `add` activity and the `add_flow` workflow while ten
+worker processes run in parallel:
+
+```bash
+python testproj/benchmark.py --tasks 20
+```
+
+On this machine the benchmark completed **20** tasks and reported:
+
+- Activities per second: 3.65
+- Workflows per second: 4.92
+
+These numbers provide a rough sense of system overhead; actual throughput will
+vary based on hardware and configuration.
