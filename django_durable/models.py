@@ -33,6 +33,12 @@ class WorkflowExecution(models.Model):
     def __str__(self):
         return f'{self.workflow_name}:{self.id}'
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["status", "updated_at"]),
+            models.Index(fields=["status", "expires_at"]),
+        ]
+
 
 class HistoryEvent(models.Model):
     # Append-only event log; ordered by autoincrement PK
@@ -50,6 +56,8 @@ class HistoryEvent(models.Model):
         indexes = [
             models.Index(fields=['execution', 'pos']),
             models.Index(fields=['execution', 'type']),
+            models.Index(fields=['execution', 'pos', 'type']),
+            models.Index(fields=['execution', 'type', 'id']),
         ]
 
 
@@ -90,4 +98,7 @@ class ActivityTask(models.Model):
         indexes = [
             models.Index(fields=['execution', 'status']),
             models.Index(fields=['status', 'after_time']),
+            models.Index(fields=['status', 'expires_at']),
+            models.Index(fields=['status', 'heartbeat_timeout']),
+            models.Index(fields=['status', 'updated_at']),
         ]
