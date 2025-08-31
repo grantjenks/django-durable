@@ -1,7 +1,7 @@
 from django.core.management.base import BaseCommand, CommandError
 
-from django_durable.models import WorkflowExecution
 from django_durable.engine import cancel_workflow
+from django_durable.models import WorkflowExecution
 
 
 class Command(BaseCommand):
@@ -28,4 +28,3 @@ class Command(BaseCommand):
 
         cancel_workflow(wf, reason=reason, cancel_queued_activities=not keep)
         self.stdout.write(self.style.SUCCESS('CANCELED'))
-

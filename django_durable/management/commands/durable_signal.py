@@ -1,9 +1,9 @@
 import json
-from django.core.management.base import BaseCommand, CommandError
-from django.utils import timezone
 
-from django_durable.models import WorkflowExecution
+from django.core.management.base import BaseCommand, CommandError
+
 from django_durable.engine import send_signal
+from django_durable.models import WorkflowExecution
 
 
 class Command(BaseCommand):
@@ -33,4 +33,3 @@ class Command(BaseCommand):
 
         send_signal(wf, name, payload)
         self.stdout.write(self.style.SUCCESS('OK'))
-

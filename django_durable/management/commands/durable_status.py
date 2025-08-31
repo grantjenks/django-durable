@@ -1,8 +1,9 @@
 import json
+
 from django.core.management.base import BaseCommand, CommandError
 
-from django_durable.models import WorkflowExecution
 from django_durable.engine import query_workflow
+from django_durable.models import WorkflowExecution
 
 
 class Command(BaseCommand):
@@ -38,4 +39,3 @@ class Command(BaseCommand):
             raise CommandError(str(e))
 
         self.stdout.write(json.dumps(res))
-

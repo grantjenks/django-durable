@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Callable, Dict, List, Optional
 
 
@@ -33,7 +33,7 @@ class Register:
         max_retries: int = 0,
         timeout: Optional[float] = None,
         heartbeat_timeout: Optional[float] = None,
-        retry_policy: Optional["RetryPolicy"] = None,
+        retry_policy: Optional['RetryPolicy'] = None,
     ):
         def deco(fn):
             if retry_policy is None:
