@@ -80,6 +80,13 @@ def heartbeat_timeout_flow(ctx):
 
 
 @register.workflow()
+def add_flow(ctx, a: int, b: int):
+    """Simple workflow used for benchmarks."""
+    res = ctx.activity("add", a, b)
+    return {"value": res["value"]}
+
+
+@register.workflow()
 def child_increment_workflow(ctx, x: int):
     res = ctx.activity("add", x, 1)
     return {"y": res["value"]}
