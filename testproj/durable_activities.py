@@ -71,7 +71,21 @@ def heartbeat_activity():
     return {"ok": True}
 
 
-@register.activity(heartbeat_timeout=0.1)
+@register.activity(heartbeat_timeout=0.1, max_retries=1)
 def no_heartbeat_activity(delay=0.2):
     sleep(delay)
     return {"ok": True}
+
+@register.activity(
+    timeout=1.0,
+    retry_policy=RetryPolicy(
+        initial_interval=0.1,
+        backoff_coefficient=2.0,
+        maximum_interval=1.0,
+        maximum_attempts=0,
+    ),
+)
+def slow_sleep(delay=0.2):
+    """Activity that sleeps for a bit to simulate long work."""
+    sleep(delay)
+    return {"slept": delay}

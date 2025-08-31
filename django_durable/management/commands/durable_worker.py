@@ -1,5 +1,6 @@
 import socket
 import time
+from datetime import timedelta
 from django.core.management.base import BaseCommand
 from django.db import DatabaseError
 from django.utils import timezone
@@ -50,24 +51,41 @@ class Command(BaseCommand):
                     task = ActivityTask.objects.get(id=tid)
                 except ActivityTask.DoesNotExist:
                     continue
-                task.status = ActivityTask.Status.TIMED_OUT
                 task.error = 'activity_timeout'
-                task.finished_at = now
-                task.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
-                HistoryEvent.objects.create(
-                    execution=task.execution,
-                    type='activity_timed_out',
-                    pos=task.pos,
-                    details={'error': 'activity_timeout'},
+                policy = task.retry_policy or {}
+                max_attempts = policy.get('maximum_attempts', 0)
+                curr_attempt = task.attempt or 0
+                should_retry = curr_attempt > 0 and (
+                    max_attempts == 0 or curr_attempt < max_attempts
                 )
-                WorkflowExecution.objects.filter(
-                    pk=task.execution_id,
-                    status__in=[
-                        WorkflowExecution.Status.PENDING,
-                        WorkflowExecution.Status.RUNNING,
-                        WorkflowExecution.Status.WAITING,
-                    ],
-                ).update(status=WorkflowExecution.Status.PENDING)
+                if should_retry:
+                    from datetime import timedelta as _td
+
+                    interval = policy.get('initial_interval', 1.0) * (
+                        policy.get('backoff_coefficient', 2.0) ** curr_attempt
+                    )
+                    max_interval = policy.get('maximum_interval')
+                    if max_interval is not None:
+                        interval = min(interval, max_interval)
+                    task.after_time = timezone.now() + _td(seconds=interval)
+                    task.save(update_fields=['error', 'after_time', 'updated_at'])
+                else:
+                    task.status = ActivityTask.Status.TIMED_OUT
+                    task.finished_at = now
+                    task.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+                    HistoryEvent.objects.create(
+                        execution=task.execution,
+                        type='activity_timed_out',
+                        pos=task.pos,
+                        details={'error': 'activity_timeout'},
+                    )
+                    WorkflowExecution.objects.filter(
+                        pk=task.execution_id,
+                        status__in=[
+                            WorkflowExecution.Status.PENDING,
+                            WorkflowExecution.Status.RUNNING,
+                        ],
+                    ).update(status=WorkflowExecution.Status.PENDING)
 
             # 0b) Timeout workflows
             wf_timeouts = list(
@@ -75,7 +93,6 @@ class Command(BaseCommand):
                     status__in=[
                         WorkflowExecution.Status.PENDING,
                         WorkflowExecution.Status.RUNNING,
-                        WorkflowExecution.Status.WAITING,
                     ],
                     expires_at__isnull=False,
                     expires_at__lte=now,
@@ -127,15 +144,86 @@ class Command(BaseCommand):
                     task = ActivityTask.objects.get(id=tid)
                 except ActivityTask.DoesNotExist:
                     continue
-                from datetime import timedelta
-
                 hb_at = task.heartbeat_at or task.started_at or now
                 if (
                     task.heartbeat_timeout is not None
                     and hb_at + timedelta(seconds=float(task.heartbeat_timeout)) <= now
                 ):
-                    task.status = ActivityTask.Status.TIMED_OUT
                     task.error = 'heartbeat_timeout'
+                    policy = task.retry_policy or {}
+                    max_attempts = policy.get('maximum_attempts', 0)
+                    curr_attempt = task.attempt or 1
+                    should_retry = max_attempts == 0 or curr_attempt < max_attempts
+                    if should_retry:
+                        from datetime import timedelta as _td
+
+                        interval = policy.get('initial_interval', 1.0) * (
+                            policy.get('backoff_coefficient', 2.0) ** (curr_attempt - 1)
+                        )
+                        max_interval = policy.get('maximum_interval')
+                        if max_interval is not None:
+                            interval = min(interval, max_interval)
+                        task.status = ActivityTask.Status.QUEUED
+                        task.after_time = timezone.now() + _td(seconds=interval)
+                        task.save(
+                            update_fields=['status', 'error', 'after_time', 'updated_at']
+                        )
+                    else:
+                        task.status = ActivityTask.Status.TIMED_OUT
+                        task.finished_at = now
+                        task.save(
+                            update_fields=['status', 'error', 'finished_at', 'updated_at']
+                        )
+                        HistoryEvent.objects.create(
+                            execution=task.execution,
+                            type='activity_timed_out',
+                            pos=task.pos,
+                            details={'error': 'heartbeat_timeout'},
+                        )
+                        WorkflowExecution.objects.filter(
+                            pk=task.execution_id,
+                            status__in=[
+                                WorkflowExecution.Status.PENDING,
+                                WorkflowExecution.Status.RUNNING,
+                            ],
+                        ).update(status=WorkflowExecution.Status.PENDING)
+
+            # 0d) Schedule-to-close timeouts for running activities
+            sc_ids = list(
+                ActivityTask.objects.filter(
+                    status=ActivityTask.Status.RUNNING,
+                    expires_at__isnull=False,
+                    expires_at__lte=now,
+                ).values_list('id', flat=True)[:batch]
+            )
+            if sc_ids:
+                progressed = True
+            for tid in sc_ids:
+                try:
+                    task = ActivityTask.objects.get(id=tid)
+                except ActivityTask.DoesNotExist:
+                    continue
+                task.error = 'activity_timeout'
+                policy = task.retry_policy or {}
+                max_attempts = policy.get('maximum_attempts', 0)
+                curr_attempt = task.attempt or 1
+                should_retry = max_attempts == 0 or curr_attempt < max_attempts
+                if should_retry:
+                    from datetime import timedelta as _td
+
+                    interval = policy.get('initial_interval', 1.0) * (
+                        policy.get('backoff_coefficient', 2.0) ** (curr_attempt - 1)
+                    )
+                    max_interval = policy.get('maximum_interval')
+                    if max_interval is not None:
+                        interval = min(interval, max_interval)
+                    task.status = ActivityTask.Status.QUEUED
+                    task.after_time = timezone.now() + _td(seconds=interval)
+                    task.save(
+                        update_fields=['status', 'error', 'after_time', 'updated_at']
+                    )
+                else:
+                    task.status = ActivityTask.Status.TIMED_OUT
                     task.finished_at = now
                     task.save(
                         update_fields=['status', 'error', 'finished_at', 'updated_at']
@@ -144,14 +232,13 @@ class Command(BaseCommand):
                         execution=task.execution,
                         type='activity_timed_out',
                         pos=task.pos,
-                        details={'error': 'heartbeat_timeout'},
+                        details={'error': 'activity_timeout'},
                     )
                     WorkflowExecution.objects.filter(
                         pk=task.execution_id,
                         status__in=[
                             WorkflowExecution.Status.PENDING,
                             WorkflowExecution.Status.RUNNING,
-                            WorkflowExecution.Status.WAITING,
                         ],
                     ).update(status=WorkflowExecution.Status.PENDING)
 
@@ -163,7 +250,6 @@ class Command(BaseCommand):
                     execution__status__in=[
                         WorkflowExecution.Status.PENDING,
                         WorkflowExecution.Status.RUNNING,
-                        WorkflowExecution.Status.WAITING,
                     ],
                 )
                 .order_by('updated_at')
@@ -195,10 +281,7 @@ class Command(BaseCommand):
             # 2) Advance workflows
             runnable_ids = list(
                 WorkflowExecution.objects.filter(
-                    status__in=[
-                        WorkflowExecution.Status.PENDING,
-                        WorkflowExecution.Status.RUNNING,
-                    ]
+                    status=WorkflowExecution.Status.PENDING
                 )
                 .order_by('updated_at')
                 .values_list('id', flat=True)[:batch]
@@ -206,23 +289,10 @@ class Command(BaseCommand):
             if runnable_ids:
                 progressed = True
             for wid in runnable_ids:
-                # Only run if we can transition PENDING -> RUNNING. If another
-                # worker grabbed it first, the update returns 0 and we skip.
-                claimed = (
-                    WorkflowExecution.objects.filter(
-                        id=wid,
-                        status=WorkflowExecution.Status.PENDING,
-                    ).update(status=WorkflowExecution.Status.RUNNING)
-                )
-                if not claimed:
-                    continue
                 try:
                     wf = WorkflowExecution.objects.get(id=wid)
                     step_workflow(wf)
                 except DatabaseError:
-                    WorkflowExecution.objects.filter(id=wid).update(
-                        status=WorkflowExecution.Status.PENDING
-                    )
                     continue
 
             loops += 1

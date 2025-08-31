@@ -96,3 +96,20 @@ def child_increment_workflow(ctx, x: int):
 def parent_child_workflow(ctx, x: int):
     child = ctx.workflow("child_increment_workflow", x=x)
     return {"child": child}
+
+@register.workflow()
+def long_running_step_flow(ctx, loops: int, delay: float):
+    """Workflow with long-running steps to test recovery when worker dies mid-execution."""
+    import time
+    for i in range(loops):
+        time.sleep(delay)
+        ctx.activity("do_work", i)
+    return {"done": loops}
+
+
+@register.workflow()
+def long_activity_flow(ctx, loops: int, delay: float):
+    """Workflow with slow activities to test recovery when worker dies during an activity."""
+    for _ in range(loops):
+        ctx.activity("slow_sleep", delay)
+    return {"done": loops}
