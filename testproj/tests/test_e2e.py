@@ -81,7 +81,7 @@ def test_signal_flow_completes(tmp_path):
     run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "10")
 
     status, result = read_workflow(exec_id)
-    assert status == "WAITING"
+    assert status == "RUNNING"
     assert result is None
 
     # Send signal and resume to completion
@@ -138,7 +138,7 @@ def test_complex_flow_runs_end_to_end(tmp_path):
     run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "20")
 
     status, result = read_workflow(exec_id)
-    assert status == "WAITING"
+    assert status == "RUNNING"
     assert result is None
 
     # Send signal and resume workflow to completion

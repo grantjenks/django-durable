@@ -351,7 +351,6 @@ def _notify_parent(exec_obj: WorkflowExecution, event_type: str, details: dict):
         status__in=[
             WorkflowExecution.Status.PENDING,
             WorkflowExecution.Status.RUNNING,
-            WorkflowExecution.Status.WAITING,
         ],
     ).update(status=WorkflowExecution.Status.PENDING)
 
@@ -359,63 +358,57 @@ def _notify_parent(exec_obj: WorkflowExecution, event_type: str, details: dict):
 def step_workflow(exec_obj: WorkflowExecution):
     """Advance a workflow execution by replaying until the next pause or completion."""
     with transaction.atomic():
-        exec_obj.refresh_from_db()
-        if exec_obj.status not in (
-            WorkflowExecution.Status.PENDING,
-            WorkflowExecution.Status.RUNNING,
-        ):
+        try:
+            wf = (
+                WorkflowExecution.objects.select_for_update(skip_locked=True)
+                .get(pk=exec_obj.pk)
+            )
+        except WorkflowExecution.DoesNotExist:
+            return
+        if wf.status != WorkflowExecution.Status.PENDING:
             return
         if not HistoryEvent.objects.filter(
-            execution=exec_obj, type='workflow_started'
+            execution=wf, type='workflow_started'
         ).exists():
             HistoryEvent.objects.create(
-                execution=exec_obj,
+                execution=wf,
                 type='workflow_started',
                 pos=0,
-                details={'input': exec_obj.input},
+                details={'input': wf.input},
             )
-        exec_obj.status = WorkflowExecution.Status.RUNNING
-        exec_obj.save(update_fields=['status', 'updated_at'])
 
-    try:
-        result = _run_workflow_once(exec_obj)
-    except Exception as e:
-        with transaction.atomic():
+        try:
+            result = _run_workflow_once(wf)
+        except Exception as e:
             HistoryEvent.objects.create(
-                execution=exec_obj,
+                execution=wf,
                 type='workflow_failed',
                 pos=999999,
                 details={'error': str(e)},
             )
-            exec_obj.status = WorkflowExecution.Status.FAILED
-            exec_obj.error = str(e)
-            exec_obj.finished_at = timezone.now()
-            exec_obj.save(
-                update_fields=['status', 'error', 'finished_at', 'updated_at']
-            )
-            _notify_parent(exec_obj, 'child_workflow_failed', {'error': str(e)})
-        return
+            wf.status = WorkflowExecution.Status.FAILED
+            wf.error = str(e)
+            wf.finished_at = timezone.now()
+            wf.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+            _notify_parent(wf, 'child_workflow_failed', {'error': str(e)})
+            return
 
-    if result is None:
-        # paused, waiting for activities/timers
-        WorkflowExecution.objects.filter(pk=exec_obj.pk).update(
-            status=WorkflowExecution.Status.WAITING
-        )
-        return
+        if result is None:
+            wf.status = WorkflowExecution.Status.RUNNING
+            wf.save(update_fields=['status', 'updated_at'])
+            return
 
-    # Completed
-    with transaction.atomic():
         HistoryEvent.objects.create(
-            execution=exec_obj,
+            execution=wf,
             type='workflow_completed',
             pos=999999,
             details={'result': result},
         )
-        exec_obj.status = WorkflowExecution.Status.COMPLETED
-        exec_obj.result = result
-        exec_obj.finished_at = timezone.now()
-        exec_obj.save(update_fields=['status', 'result', 'finished_at', 'updated_at'])
-        _notify_parent(exec_obj, 'child_workflow_completed', {'result': result})
+        wf.status = WorkflowExecution.Status.COMPLETED
+        wf.result = result
+        wf.finished_at = timezone.now()
+        wf.save(update_fields=['status', 'result', 'finished_at', 'updated_at'])
+        _notify_parent(wf, 'child_workflow_completed', {'result': result})
 
 
 def execute_activity(task: ActivityTask):
@@ -485,7 +478,6 @@ def execute_activity(task: ActivityTask):
             status__in=[
                 WorkflowExecution.Status.PENDING,
                 WorkflowExecution.Status.RUNNING,
-                WorkflowExecution.Status.WAITING,
             ],
         ).update(status=WorkflowExecution.Status.PENDING)
 
@@ -591,7 +583,6 @@ def cancel_workflow(execution: Union[WorkflowExecution, str], reason: Optional[s
         status__in=[
             WorkflowExecution.Status.PENDING,
             WorkflowExecution.Status.RUNNING,
-            WorkflowExecution.Status.WAITING,
         ],
     ):
         cancel_workflow(
@@ -709,10 +700,7 @@ def _run_loop(execution: WorkflowExecution, tick: float = 0.01):
         # Step all runnable workflows (including children) so that parent
         # workflows notice child completion or failure events.
         runnable = WorkflowExecution.objects.filter(
-            status__in=[
-                WorkflowExecution.Status.PENDING,
-                WorkflowExecution.Status.RUNNING,
-            ]
+            status=WorkflowExecution.Status.PENDING
         )
         for wf in runnable:
             step_workflow(wf)

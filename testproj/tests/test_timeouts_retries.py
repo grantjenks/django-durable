@@ -67,6 +67,7 @@ def read_activity_statuses(exec_id):
 
 
 def test_activity_timeout(tmp_path):
+    run_manage("flush", "--noinput")
     out = run_manage("durable_start", "activity_timeout_flow")
     exec_id = out.splitlines()[-1].strip()
     run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "5")
@@ -93,6 +94,7 @@ def test_workflow_timeout(tmp_path):
 
 
 def test_retry_policy(tmp_path):
+    run_manage("flush", "--noinput")
     out = run_manage(
         "durable_start",
         "retry_flow",

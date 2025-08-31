@@ -40,7 +40,7 @@ def test_status_and_custom_query(tmp_path):
     # Default status query
     res = run_manage("durable_status", exec_id)
     data = json.loads(res)
-    assert data["status"] == "WAITING"
+    assert data["status"] == "RUNNING"
     assert data["workflow_name"] == "e2e_flow"
 
     # Custom history query registered for e2e_flow
