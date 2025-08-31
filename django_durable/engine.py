@@ -1,7 +1,9 @@
 from contextlib import contextmanager
 from dataclasses import dataclass
 import threading
+import time
 from typing import Any, Optional, Union
+
 from django.db import transaction
 from django.utils import timezone
 
@@ -10,6 +12,11 @@ from .models import WorkflowExecution, HistoryEvent, ActivityTask
 
 
 _current_activity = threading.local()
+
+
+@register.workflow("__run_activity__")
+def _run_activity_workflow(ctx, activity_name: str, args: list, kwargs: dict):
+    return ctx.activity(activity_name, *args, **kwargs)
 
 
 class NeedsPause(Exception):
@@ -650,4 +657,109 @@ def query_workflow(execution: Union[WorkflowExecution, str], name: str, **payloa
 
     raise KeyError(
         f"Unknown query '{name}' for workflow '{execution.workflow_name}'"
+    )
+
+
+# ---------------------------------------------------------------------------
+# High-level run/start/wait APIs
+# ---------------------------------------------------------------------------
+
+
+def start_workflow(workflow_name: str, timeout: Optional[float] = None, **inputs) -> str:
+    """Create a workflow execution and return its handle (ID)."""
+    if workflow_name not in register.workflows:
+        raise KeyError(f"Unknown workflow '{workflow_name}'")
+    fn = register.workflows[workflow_name]
+    if timeout is None:
+        timeout = getattr(fn, '_durable_timeout', None)
+    expires_at = None
+    if timeout is not None:
+        from datetime import timedelta
+
+        expires_at = timezone.now() + timedelta(seconds=float(timeout))
+    wf = WorkflowExecution.objects.create(
+        workflow_name=workflow_name, input=inputs, expires_at=expires_at
+    )
+    return str(wf.id)
+
+
+def _run_loop(execution: WorkflowExecution, tick: float = 0.01):
+    """Advance the given execution synchronously until completion."""
+    terminal = {
+        WorkflowExecution.Status.COMPLETED,
+        WorkflowExecution.Status.FAILED,
+        WorkflowExecution.Status.CANCELED,
+        WorkflowExecution.Status.TIMED_OUT,
+    }
+    while True:
+        now = timezone.now()
+        progressed = False
+
+        # Execute due activities for this workflow
+        due = list(
+            ActivityTask.objects.filter(
+                execution=execution,
+                status=ActivityTask.Status.QUEUED,
+                after_time__lte=now,
+            )
+        )
+        for task in due:
+            execute_activity(task)
+            progressed = True
+
+        # Step workflow itself
+        step_workflow(execution)
+        execution.refresh_from_db()
+        if execution.status in terminal:
+            break
+
+        if not progressed:
+            next_due = (
+                ActivityTask.objects.filter(
+                    execution=execution, status=ActivityTask.Status.QUEUED
+                )
+                .order_by('after_time')
+                .values_list('after_time', flat=True)
+                .first()
+            )
+            if next_due:
+                wait = max(0.0, (next_due - timezone.now()).total_seconds())
+                time.sleep(min(wait, tick))
+            else:
+                time.sleep(tick)
+
+    if execution.status == WorkflowExecution.Status.COMPLETED:
+        return execution.result
+    raise RuntimeError(execution.error or execution.status)
+
+
+def wait_workflow(execution: Union[WorkflowExecution, str]) -> Any:
+    """Wait for a workflow execution to complete and return its result."""
+    if not isinstance(execution, WorkflowExecution):
+        execution = WorkflowExecution.objects.get(pk=execution)
+    return _run_loop(execution)
+
+
+def run_workflow(workflow_name: str, timeout: Optional[float] = None, **inputs) -> Any:
+    """Convenience helper: start a workflow and wait for its result."""
+    exec_id = start_workflow(workflow_name, timeout=timeout, **inputs)
+    return wait_workflow(exec_id)
+
+
+def start_activity(name: str, *args, **kwargs) -> str:
+    """Start an activity as a standalone workflow and return its handle."""
+    return start_workflow(
+        "__run_activity__", activity_name=name, args=list(args), kwargs=kwargs
+    )
+
+
+def wait_activity(handle: Union[str, WorkflowExecution]) -> Any:
+    """Wait for a started activity and return its result."""
+    return wait_workflow(handle)
+
+
+def run_activity(name: str, *args, **kwargs) -> Any:
+    """Run an activity synchronously and return its result."""
+    return run_workflow(
+        "__run_activity__", activity_name=name, args=list(args), kwargs=kwargs
     )
