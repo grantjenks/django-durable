@@ -29,6 +29,12 @@ def e2e_flow(ctx, value):
     return {"res": res["value"], "sig": sig}
 
 
+@register.query("e2e_flow")
+def history(execution):
+    """Return the number of history events for this execution."""
+    return {"events": execution.history.count()}
+
+
 @register.workflow()
 def complex_flow(ctx, value):
     # chain multiple activities with timers and a signal

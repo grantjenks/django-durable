@@ -6,12 +6,23 @@ class Register:
     def __init__(self):
         self.workflows: Dict[str, Callable] = {}
         self.activities: Dict[str, Callable] = {}
+        self.queries: Dict[str, Dict[str, Callable]] = {}
 
     def workflow(self, name: Optional[str] = None, timeout: Optional[float] = None):
         def deco(fn):
             if timeout is not None:
                 fn._durable_timeout = timeout
             self.workflows[name or fn.__name__] = fn
+            return fn
+
+        return deco
+
+    def query(self, workflow_name: str, name: Optional[str] = None):
+        """Register a read-only query handler for a workflow."""
+
+        def deco(fn: Callable):
+            wf_queries = self.queries.setdefault(workflow_name, {})
+            wf_queries[name or fn.__name__] = fn
             return fn
 
         return deco
