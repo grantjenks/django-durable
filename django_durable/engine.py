@@ -1,23 +1,21 @@
-from contextlib import contextmanager
-from dataclasses import dataclass
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any, Optional, Union
 
 from django.db import transaction
 from django.utils import timezone
 
-from .registry import register
-from .models import WorkflowExecution, HistoryEvent, ActivityTask
 from .constants import (
-    HistoryEventType,
-    ErrorCode,
+    FINAL_EVENT_POS,
     RUN_ACTIVITY_WORKFLOW,
     SLEEP_ACTIVITY_NAME,
-    FINAL_EVENT_POS,
     SPECIAL_EVENT_POS,
+    ErrorCode,
+    HistoryEventType,
 )
-
+from .models import ActivityTask, HistoryEvent, WorkflowExecution
+from .registry import register
 
 _current_activity = threading.local()
 
@@ -67,7 +65,7 @@ class Context:
             execution=self.execution,
             type=HistoryEventType.VERSION_MARKER.value,
             pos=pos,
-            details={"change_id": change_id, "version": version},
+            details={'change_id': change_id, 'version': version},
         )
         return version
 
@@ -110,7 +108,7 @@ class Context:
                     HistoryEventType.ACTIVITY_TIMED_OUT.value,
                 ),
             )
-            .order_by("id")
+            .order_by('id')
             .last()
         )
         if ev_done:
@@ -119,9 +117,9 @@ class Context:
                 HistoryEventType.ACTIVITY_TIMED_OUT.value,
             ):
                 raise RuntimeError(
-                    ev_done.details.get("error", ErrorCode.ACTIVITY_FAILED.value)
+                    ev_done.details.get('error', ErrorCode.ACTIVITY_FAILED.value)
                 )
-            return ev_done.details.get("result")
+            return ev_done.details.get('result')
 
         # 2) If scheduled but pending -> pause
         scheduled = HistoryEvent.objects.filter(
@@ -139,7 +137,9 @@ class Context:
             fn = register.activities.get(name)
             policy_obj = getattr(fn, '_durable_retry_policy', None) if fn else None
             policy_dict = (
-                policy_obj.asdict() if policy_obj else {'maximum_attempts': getattr(fn, '_durable_max_retries', 0)}
+                policy_obj.asdict()
+                if policy_obj
+                else {'maximum_attempts': getattr(fn, '_durable_max_retries', 0)}
             )
             if timeout is None and fn is not None:
                 timeout = getattr(fn, '_durable_timeout', None)
@@ -150,12 +150,12 @@ class Context:
                 type=HistoryEventType.ACTIVITY_SCHEDULED.value,
                 pos=pos,
                 details={
-                    "activity_name": name,
-                    "args": args,
-                    "kwargs": kwargs,
-                    "timeout": timeout,
-                    "heartbeat_timeout": heartbeat,
-                    "retry_policy": policy_dict,
+                    'activity_name': name,
+                    'args': args,
+                    'kwargs': kwargs,
+                    'timeout': timeout,
+                    'heartbeat_timeout': heartbeat,
+                    'retry_policy': policy_dict,
                 },
             )
             # For internal sleep, defer until due time instead of immediate run.
@@ -211,7 +211,7 @@ class Context:
                 pos=pos,
                 type=HistoryEventType.SIGNAL_CONSUMED.value,
             )
-            .order_by("id")
+            .order_by('id')
             .last()
         )
         if ev_done:
@@ -238,8 +238,7 @@ class Context:
                     execution=self.execution,
                     type=HistoryEventType.SIGNAL_ENQUEUED.value,
                     details__name=name,
-                )
-                .order_by("id")
+                ).order_by('id')
             )
             enq = None
             if enqueued:
@@ -248,7 +247,7 @@ class Context:
                     HistoryEvent.objects.filter(
                         execution=self.execution,
                         type=HistoryEventType.SIGNAL_CONSUMED.value,
-                    ).values_list("details__enqueued_id", flat=True)
+                    ).values_list('details__enqueued_id', flat=True)
                 )
                 for e in enqueued:
                     if e.id not in consumed_ids:
@@ -261,9 +260,9 @@ class Context:
                     type=HistoryEventType.SIGNAL_CONSUMED.value,
                     pos=pos,
                     details={
-                        "name": name,
-                        "payload": enq.details.get("payload"),
-                        "enqueued_id": enq.id,
+                        'name': name,
+                        'payload': enq.details.get('payload'),
+                        'enqueued_id': enq.id,
                     },
                 )
                 return enq.details.get('payload')
@@ -279,7 +278,7 @@ class Context:
                     execution=self.execution,
                     type=HistoryEventType.SIGNAL_WAIT.value,
                     pos=pos,
-                    details={"name": name},
+                    details={'name': name},
                 )
         raise NeedsPause()
 
@@ -303,15 +302,15 @@ class Context:
                     HistoryEventType.CHILD_WORKFLOW_FAILED.value,
                 ],
             )
-            .order_by("id")
+            .order_by('id')
             .last()
         )
         if ev_done:
             if ev_done.type == HistoryEventType.CHILD_WORKFLOW_FAILED.value:
                 raise RuntimeError(
-                    ev_done.details.get("error", ErrorCode.ACTIVITY_FAILED.value)
+                    ev_done.details.get('error', ErrorCode.ACTIVITY_FAILED.value)
                 )
-            return ev_done.details.get("result")
+            return ev_done.details.get('result')
 
         scheduled = HistoryEvent.objects.filter(
             execution=self.execution,
@@ -342,10 +341,10 @@ class Context:
                 type=HistoryEventType.CHILD_WORKFLOW_SCHEDULED.value,
                 pos=pos,
                 details={
-                    "workflow_name": name,
-                    "input": input,
-                    "child_id": str(child.id),
-                    "timeout": timeout,
+                    'workflow_name': name,
+                    'input': input,
+                    'child_id': str(child.id),
+                    'timeout': timeout,
                 },
             )
         raise NeedsPause()
@@ -372,7 +371,7 @@ def _notify_parent(exec_obj: WorkflowExecution, event_type: str, details: dict):
         execution=parent,
         type=event_type,
         pos=exec_obj.parent_pos or 0,
-        details={"child_id": str(exec_obj.id), **details},
+        details={'child_id': str(exec_obj.id), **details},
     )
     WorkflowExecution.objects.filter(
         pk=parent.pk,
@@ -387,9 +386,8 @@ def step_workflow(exec_obj: WorkflowExecution):
     """Advance a workflow execution by replaying until the next pause or completion."""
     with transaction.atomic():
         try:
-            wf = (
-                WorkflowExecution.objects.select_for_update(skip_locked=True)
-                .get(pk=exec_obj.pk)
+            wf = WorkflowExecution.objects.select_for_update(skip_locked=True).get(
+                pk=exec_obj.pk
             )
         except WorkflowExecution.DoesNotExist:
             return
@@ -402,7 +400,7 @@ def step_workflow(exec_obj: WorkflowExecution):
                 execution=wf,
                 type=HistoryEventType.WORKFLOW_STARTED.value,
                 pos=0,
-                details={"input": wf.input},
+                details={'input': wf.input},
             )
 
         try:
@@ -412,7 +410,7 @@ def step_workflow(exec_obj: WorkflowExecution):
                 execution=wf,
                 type=HistoryEventType.WORKFLOW_FAILED.value,
                 pos=FINAL_EVENT_POS,
-                details={"error": str(e)},
+                details={'error': str(e)},
             )
             wf.status = WorkflowExecution.Status.FAILED
             wf.error = str(e)
@@ -421,7 +419,7 @@ def step_workflow(exec_obj: WorkflowExecution):
             _notify_parent(
                 wf,
                 HistoryEventType.CHILD_WORKFLOW_FAILED.value,
-                {"error": str(e)},
+                {'error': str(e)},
             )
             return
 
@@ -434,7 +432,7 @@ def step_workflow(exec_obj: WorkflowExecution):
             execution=wf,
             type=HistoryEventType.WORKFLOW_COMPLETED.value,
             pos=FINAL_EVENT_POS,
-            details={"result": result},
+            details={'result': result},
         )
         wf.status = WorkflowExecution.Status.COMPLETED
         wf.result = result
@@ -443,7 +441,7 @@ def step_workflow(exec_obj: WorkflowExecution):
         _notify_parent(
             wf,
             HistoryEventType.CHILD_WORKFLOW_COMPLETED.value,
-            {"result": result},
+            {'result': result},
         )
 
 
@@ -467,12 +465,12 @@ def execute_activity(task: ActivityTask):
         else:
             task.error = ErrorCode.WORKFLOW_NOT_RUNNABLE.value
         task.finished_at = timezone.now()
-        task.save(update_fields=["status", "error", "finished_at", "updated_at"])
+        task.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
         HistoryEvent.objects.create(
             execution=task.execution,
             type=HistoryEventType.ACTIVITY_FAILED.value,
             pos=task.pos,
-            details={"error": task.error},
+            details={'error': task.error},
         )
         return
 
@@ -499,13 +497,13 @@ def execute_activity(task: ActivityTask):
         task.status = ActivityTask.Status.COMPLETED
         task.result = result
         task.finished_at = timezone.now()
-        task.save(update_fields=["status", "result", "finished_at", "updated_at"])
+        task.save(update_fields=['status', 'result', 'finished_at', 'updated_at'])
 
         HistoryEvent.objects.create(
             execution=task.execution,
             type=HistoryEventType.ACTIVITY_COMPLETED.value,
             pos=task.pos,
-            details={"activity_name": task.activity_name, "result": result},
+            details={'activity_name': task.activity_name, 'result': result},
         )
 
         # Nudge workflow runnable again unless terminal (e.g., canceled)
@@ -542,12 +540,12 @@ def execute_activity(task: ActivityTask):
         else:
             task.status = ActivityTask.Status.FAILED
             task.finished_at = timezone.now()
-            task.save(update_fields=["status", "error", "finished_at", "updated_at"])
+            task.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
             HistoryEvent.objects.create(
                 execution=task.execution,
                 type=HistoryEventType.ACTIVITY_FAILED.value,
                 pos=task.pos,
-                details={"error": str(e)},
+                details={'error': str(e)},
             )
     finally:
         _current_activity.task_id = None
@@ -565,7 +563,11 @@ def activity_heartbeat(details: Any = None):
     ActivityTask.objects.filter(id=task_id).update(**fields)
 
 
-def cancel_workflow(execution: Union[WorkflowExecution, str], reason: Optional[str] = None, cancel_queued_activities: bool = True):
+def cancel_workflow(
+    execution: Union[WorkflowExecution, str],
+    reason: Optional[str] = None,
+    cancel_queued_activities: bool = True,
+):
     """Cancel a workflow execution and optionally cancel its queued activities.
 
     - Sets workflow status to CANCELED if not terminal; records 'workflow_canceled' event.
@@ -586,12 +588,14 @@ def cancel_workflow(execution: Union[WorkflowExecution, str], reason: Optional[s
             execution=execution,
             type=HistoryEventType.WORKFLOW_CANCELED.value,
             pos=SPECIAL_EVENT_POS,
-            details={"reason": reason} if reason else {},
+            details={'reason': reason} if reason else {},
         )
         execution.status = WorkflowExecution.Status.CANCELED
-        execution.error = (execution.error or '')
+        execution.error = execution.error or ''
         if reason:
-            execution.error = (execution.error + '\n' if execution.error else '') + f'Canceled: {reason}'
+            execution.error = (
+                execution.error + '\n' if execution.error else ''
+            ) + f'Canceled: {reason}'
         execution.finished_at = timezone.now()
         execution.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
 
@@ -604,18 +608,18 @@ def cancel_workflow(execution: Union[WorkflowExecution, str], reason: Optional[s
                 t.status = ActivityTask.Status.FAILED
                 t.error = ErrorCode.WORKFLOW_CANCELED.value
                 t.finished_at = now
-                t.save(update_fields=["status", "error", "finished_at", "updated_at"])
+                t.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
                 HistoryEvent.objects.create(
                     execution=execution,
                     type=HistoryEventType.ACTIVITY_FAILED.value,
                     pos=t.pos,
-                    details={"error": ErrorCode.WORKFLOW_CANCELED.value},
+                    details={'error': ErrorCode.WORKFLOW_CANCELED.value},
                 )
 
         _notify_parent(
             execution,
             HistoryEventType.CHILD_WORKFLOW_FAILED.value,
-            {"error": ErrorCode.WORKFLOW_CANCELED.value},
+            {'error': ErrorCode.WORKFLOW_CANCELED.value},
         )
 
     for child in WorkflowExecution.objects.filter(
@@ -632,7 +636,9 @@ def cancel_workflow(execution: Union[WorkflowExecution, str], reason: Optional[s
         )
 
 
-def send_signal(execution: Union[WorkflowExecution, str], name: str, payload: Any = None):
+def send_signal(
+    execution: Union[WorkflowExecution, str], name: str, payload: Any = None
+):
     """Enqueue an external signal for a workflow and mark it runnable.
 
     - Appends a 'signal_enqueued' HistoryEvent with the given name/payload.
@@ -645,7 +651,7 @@ def send_signal(execution: Union[WorkflowExecution, str], name: str, payload: An
             execution=execution,
             type=HistoryEventType.SIGNAL_ENQUEUED.value,
             pos=0,
-            details={"name": name, "payload": payload},
+            details={'name': name, 'payload': payload},
         )
         if execution.status not in (
             WorkflowExecution.Status.COMPLETED,
@@ -674,8 +680,9 @@ def query_workflow(execution: Union[WorkflowExecution, str], name: str, **payloa
 
     if name == 'status':
         pending = list(
-            execution.activities.filter(status=ActivityTask.Status.QUEUED)
-            .values('id', 'activity_name', 'pos')
+            execution.activities.filter(status=ActivityTask.Status.QUEUED).values(
+                'id', 'activity_name', 'pos'
+            )
         )
         return {
             'id': str(execution.id),
@@ -686,9 +693,7 @@ def query_workflow(execution: Union[WorkflowExecution, str], name: str, **payloa
             'pending_activities': pending,
         }
 
-    raise KeyError(
-        f"Unknown query '{name}' for workflow '{execution.workflow_name}'"
-    )
+    raise KeyError(f"Unknown query '{name}' for workflow '{execution.workflow_name}'")
 
 
 # ---------------------------------------------------------------------------
@@ -696,7 +701,9 @@ def query_workflow(execution: Union[WorkflowExecution, str], name: str, **payloa
 # ---------------------------------------------------------------------------
 
 
-def start_workflow(workflow_name: str, timeout: Optional[float] = None, **inputs) -> str:
+def start_workflow(
+    workflow_name: str, timeout: Optional[float] = None, **inputs
+) -> str:
     """Create a workflow execution and return its handle (ID)."""
     if workflow_name not in register.workflows:
         raise KeyError(f"Unknown workflow '{workflow_name}'")

@@ -1,13 +1,14 @@
 import socket
 import time
 from datetime import timedelta
+
 from django.core.management.base import BaseCommand
 from django.db import DatabaseError
 from django.utils import timezone
 
-from django_durable.engine import step_workflow, execute_activity
-from django_durable.models import WorkflowExecution, ActivityTask, HistoryEvent
-from django_durable.constants import HistoryEventType, ErrorCode, SPECIAL_EVENT_POS
+from django_durable.constants import SPECIAL_EVENT_POS, ErrorCode, HistoryEventType
+from django_durable.engine import execute_activity, step_workflow
+from django_durable.models import ActivityTask, HistoryEvent, WorkflowExecution
 
 
 class Command(BaseCommand):
@@ -73,12 +74,14 @@ class Command(BaseCommand):
                 else:
                     task.status = ActivityTask.Status.TIMED_OUT
                     task.finished_at = now
-                    task.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+                    task.save(
+                        update_fields=['status', 'error', 'finished_at', 'updated_at']
+                    )
                     HistoryEvent.objects.create(
                         execution=task.execution,
                         type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
                         pos=task.pos,
-                        details={"error": ErrorCode.ACTIVITY_TIMEOUT.value},
+                        details={'error': ErrorCode.ACTIVITY_TIMEOUT.value},
                     )
                     WorkflowExecution.objects.filter(
                         pk=task.execution_id,
@@ -110,7 +113,7 @@ class Command(BaseCommand):
                     execution=wf,
                     type=HistoryEventType.WORKFLOW_TIMED_OUT.value,
                     pos=SPECIAL_EVENT_POS,
-                    details={"error": ErrorCode.WORKFLOW_TIMEOUT.value},
+                    details={'error': ErrorCode.WORKFLOW_TIMEOUT.value},
                 )
                 wf.status = WorkflowExecution.Status.TIMED_OUT
                 wf.error = ErrorCode.WORKFLOW_TIMEOUT.value
@@ -123,12 +126,14 @@ class Command(BaseCommand):
                     t.status = ActivityTask.Status.FAILED
                     t.error = ErrorCode.WORKFLOW_TIMEOUT.value
                     t.finished_at = now
-                    t.save(update_fields=["status", "error", "finished_at", "updated_at"])
+                    t.save(
+                        update_fields=['status', 'error', 'finished_at', 'updated_at']
+                    )
                     HistoryEvent.objects.create(
                         execution=wf,
                         type=HistoryEventType.ACTIVITY_FAILED.value,
                         pos=t.pos,
-                        details={"error": ErrorCode.WORKFLOW_TIMEOUT.value},
+                        details={'error': ErrorCode.WORKFLOW_TIMEOUT.value},
                     )
 
             # 0c) Heartbeat timeouts for running activities
@@ -167,19 +172,29 @@ class Command(BaseCommand):
                         task.status = ActivityTask.Status.QUEUED
                         task.after_time = timezone.now() + _td(seconds=interval)
                         task.save(
-                            update_fields=['status', 'error', 'after_time', 'updated_at']
+                            update_fields=[
+                                'status',
+                                'error',
+                                'after_time',
+                                'updated_at',
+                            ]
                         )
                     else:
                         task.status = ActivityTask.Status.TIMED_OUT
                         task.finished_at = now
                         task.save(
-                            update_fields=['status', 'error', 'finished_at', 'updated_at']
+                            update_fields=[
+                                'status',
+                                'error',
+                                'finished_at',
+                                'updated_at',
+                            ]
                         )
                         HistoryEvent.objects.create(
                             execution=task.execution,
                             type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
                             pos=task.pos,
-                            details={"error": ErrorCode.HEARTBEAT_TIMEOUT.value},
+                            details={'error': ErrorCode.HEARTBEAT_TIMEOUT.value},
                         )
                         WorkflowExecution.objects.filter(
                             pk=task.execution_id,
@@ -227,13 +242,13 @@ class Command(BaseCommand):
                     task.status = ActivityTask.Status.TIMED_OUT
                     task.finished_at = now
                     task.save(
-                        update_fields=["status", "error", "finished_at", "updated_at"]
+                        update_fields=['status', 'error', 'finished_at', 'updated_at']
                     )
                     HistoryEvent.objects.create(
                         execution=task.execution,
                         type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
                         pos=task.pos,
-                        details={"error": ErrorCode.ACTIVITY_TIMEOUT.value},
+                        details={'error': ErrorCode.ACTIVITY_TIMEOUT.value},
                     )
                     WorkflowExecution.objects.filter(
                         pk=task.execution_id,
@@ -260,13 +275,11 @@ class Command(BaseCommand):
                 progressed = True
             for tid in due_ids:
                 # Claim the task atomically so other workers skip it.
-                claimed = (
-                    ActivityTask.objects.filter(
-                        id=tid,
-                        status=ActivityTask.Status.QUEUED,
-                        after_time__lte=now,
-                    ).update(status=ActivityTask.Status.RUNNING)
-                )
+                claimed = ActivityTask.objects.filter(
+                    id=tid,
+                    status=ActivityTask.Status.QUEUED,
+                    after_time__lte=now,
+                ).update(status=ActivityTask.Status.RUNNING)
                 if not claimed:
                     continue
                 try:

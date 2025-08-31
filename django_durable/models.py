@@ -1,4 +1,5 @@
 import uuid
+
 from django.db import models
 from django.utils import timezone
 
@@ -35,8 +36,8 @@ class WorkflowExecution(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["status", "updated_at"]),
-            models.Index(fields=["status", "expires_at"]),
+            models.Index(fields=['status', 'updated_at']),
+            models.Index(fields=['status', 'expires_at']),
         ]
 
 
