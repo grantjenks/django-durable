@@ -695,29 +695,35 @@ def _run_loop(execution: WorkflowExecution, tick: float = 0.01):
         now = timezone.now()
         progressed = False
 
-        # Execute due activities for this workflow
+        # Execute any due activities across all workflows. This ensures that
+        # child workflow activities also run when using the synchronous API.
         due = list(
             ActivityTask.objects.filter(
-                execution=execution,
-                status=ActivityTask.Status.QUEUED,
-                after_time__lte=now,
+                status=ActivityTask.Status.QUEUED, after_time__lte=now
             )
         )
         for task in due:
             execute_activity(task)
             progressed = True
 
-        # Step workflow itself
-        step_workflow(execution)
+        # Step all runnable workflows (including children) so that parent
+        # workflows notice child completion or failure events.
+        runnable = WorkflowExecution.objects.filter(
+            status__in=[
+                WorkflowExecution.Status.PENDING,
+                WorkflowExecution.Status.RUNNING,
+            ]
+        )
+        for wf in runnable:
+            step_workflow(wf)
+
         execution.refresh_from_db()
         if execution.status in terminal:
             break
 
         if not progressed:
             next_due = (
-                ActivityTask.objects.filter(
-                    execution=execution, status=ActivityTask.Status.QUEUED
-                )
+                ActivityTask.objects.filter(status=ActivityTask.Status.QUEUED)
                 .order_by('after_time')
                 .values_list('after_time', flat=True)
                 .first()
