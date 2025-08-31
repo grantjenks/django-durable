@@ -618,3 +618,36 @@ def send_signal(execution: Union[WorkflowExecution, str], name: str, payload: An
             WorkflowExecution.objects.filter(pk=execution.pk).update(
                 status=WorkflowExecution.Status.PENDING
             )
+
+
+def query_workflow(execution: Union[WorkflowExecution, str], name: str, **payload):
+    """Execute a registered read-only query against a workflow.
+
+    A default ``status`` query is always available returning basic
+    information about the execution.
+    """
+
+    if not isinstance(execution, WorkflowExecution):
+        execution = WorkflowExecution.objects.get(pk=execution)
+
+    fn = register.queries.get(execution.workflow_name, {}).get(name)
+    if fn is not None:
+        return fn(execution, **payload)
+
+    if name == 'status':
+        pending = list(
+            execution.activities.filter(status=ActivityTask.Status.QUEUED)
+            .values('id', 'activity_name', 'pos')
+        )
+        return {
+            'id': str(execution.id),
+            'workflow_name': execution.workflow_name,
+            'status': execution.status,
+            'result': execution.result,
+            'error': execution.error,
+            'pending_activities': pending,
+        }
+
+    raise KeyError(
+        f"Unknown query '{name}' for workflow '{execution.workflow_name}'"
+    )
