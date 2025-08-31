@@ -4,6 +4,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any, List, Tuple
+
 import pytest
 
 
@@ -12,7 +14,7 @@ MANAGE = str(ROOT / "manage.py")
 DB_PATH = str(ROOT / "db.sqlite3")
 
 
-def run_manage(*args, check=True):
+def run_manage(*args: str, check: bool = True) -> str:
     cmd = [sys.executable, MANAGE, *args]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if check and res.returncode != 0:
@@ -21,12 +23,12 @@ def run_manage(*args, check=True):
 
 
 @pytest.fixture(scope="session", autouse=True)
-def migrate_db():
+def migrate_db() -> None:
     # Ensure DB schema is up-to-date for tests
     run_manage("migrate", "--noinput")
 
 
-def read_workflow(exec_id):
+def read_workflow(exec_id: str) -> Tuple[str, Any]:
     import sqlite3
 
     con = sqlite3.connect(DB_PATH)
@@ -50,7 +52,7 @@ def read_workflow(exec_id):
         con.close()
 
 
-def read_activity_statuses(exec_id):
+def read_activity_statuses(exec_id: str) -> List[str]:
     import sqlite3
 
     con = sqlite3.connect(DB_PATH)

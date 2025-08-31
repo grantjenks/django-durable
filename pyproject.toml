@@ -14,6 +14,8 @@ dev = [
     "ruff~=0.4",
     "isort~=5.13",
     "nox>=2024.4.15",
+    "mypy>=1.11",
+    "django-stubs>=5.2",
 ]
 
 [tool.setuptools]
@@ -29,6 +31,8 @@ dev-dependencies = [
     "ruff~=0.4",
     "isort~=5.13",
     "nox>=2024.4.15",
+    "mypy>=1.11",
+    "django-stubs>=5.2",
 ]
 
 [tool.ruff]
@@ -43,3 +47,18 @@ quote-style = "single"
 profile = "black"
 line_length = 88
 skip = ["testproj", "django_durable/migrations", "manage.py", ".venv"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+ignore_missing_imports = true
+files = ["django_durable", "testproj"]
+exclude = ["django_durable/migrations", "manage.py"]
+
+[[tool.mypy.overrides]]
+module = ["testproj.settings"]
+ignore_errors = false
+
+[[tool.mypy.overrides]]
+module = ["django_durable.*", "testproj.*"]
+ignore_errors = true
