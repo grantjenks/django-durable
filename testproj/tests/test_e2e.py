@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, List, Tuple
 
 import pytest
+import sqlite3
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,8 +30,6 @@ def migrate_db() -> None:
 
 
 def read_workflow(exec_id: str) -> Tuple[str, Any]:
-    import sqlite3
-
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
@@ -53,8 +52,6 @@ def read_workflow(exec_id: str) -> Tuple[str, Any]:
 
 
 def read_activity_statuses(exec_id: str) -> List[str]:
-    import sqlite3
-
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()

@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import sqlite3
 
 ROOT = Path(__file__).resolve().parents[2]
 MANAGE = str(ROOT / "manage.py")
@@ -26,8 +27,6 @@ def migrate_db():
 
 
 def read_workflow(exec_id):
-    import sqlite3
-
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
@@ -46,8 +45,6 @@ def read_workflow(exec_id):
 
 
 def read_activity(exec_id):
-    import sqlite3
-
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
