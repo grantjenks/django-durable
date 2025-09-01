@@ -3,3 +3,5 @@
 *.egg-info/
 
 db.sqlite3
+docs/_build/
+build/
