@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Django Durable — State‑D icon — original">
+  <title>Django Durable — State‑D icon — Original</title>
+  <desc>Outlined D with vertical bus and six node dots; orthogonal connectors; integer-aligned for crisp rendering.</desc>
+  <g fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M32 24 H70 A40 40 0 0 1 70 104 H32 M32 24 V104"/>
+  </g>
+  <g fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" shape-rendering="crispEdges">
+    <path d="M 56 28 V 100"/>
+    <path d="M 32 24 H 56"/>
+    <path d="M 32 64 H 56"/>
+    <path d="M 32 104 H 56"/>
+    <path d="M 56 36 H 70"/>
+    <path d="M 56 64 H 70"/>
+    <path d="M 56 92 H 70"/>
+  </g>
+  <g fill="currentColor" stroke="none">
+    <circle cx="32" cy="24" r="4"/>
+    <circle cx="32" cy="64" r="4"/>
+    <circle cx="32" cy="104" r="4"/>
+    <circle cx="70" cy="36" r="4"/>
+    <circle cx="70" cy="64" r="4"/>
+    <circle cx="70" cy="92" r="4"/>
+  </g>
+</svg>
