@@ -1,6 +1,7 @@
 import threading
 import time
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Optional, Union
 
 from django.db import transaction
@@ -167,13 +168,9 @@ class Context:
                     seconds = 0.0
                 if seconds < 0:
                     seconds = 0.0
-                from datetime import timedelta
-
                 after_time = after_time + timedelta(seconds=seconds)
             expires_at = None
             if timeout is not None:
-                from datetime import timedelta
-
                 expires_at = timezone.now() + timedelta(seconds=float(timeout))
 
             ActivityTask.objects.create(
@@ -326,8 +323,6 @@ class Context:
                 timeout = getattr(fn, '_durable_timeout', None)
             expires_at = None
             if timeout is not None:
-                from datetime import timedelta
-
                 expires_at = timezone.now() + timedelta(seconds=float(timeout))
             child = WorkflowExecution.objects.create(
                 workflow_name=name,
@@ -447,8 +442,6 @@ def step_workflow(exec_obj: WorkflowExecution):
 
 def execute_activity(task: ActivityTask):
     """Run one activity and append completion/failure events."""
-    from .registry import register
-
     fn = register.activities.get(task.activity_name)
 
     # If workflow is not runnable (completed/failed/canceled), don't execute.
@@ -525,8 +518,6 @@ def execute_activity(task: ActivityTask):
             max_attempts == 0 or task.attempt < max_attempts
         )
         if should_retry:
-            from datetime import timedelta
-
             interval = policy.get('initial_interval', 1.0) * (
                 policy.get('backoff_coefficient', 2.0) ** (task.attempt - 1)
             )
@@ -712,8 +703,6 @@ def start_workflow(
         timeout = getattr(fn, '_durable_timeout', None)
     expires_at = None
     if timeout is not None:
-        from datetime import timedelta
-
         expires_at = timezone.now() + timedelta(seconds=float(timeout))
     wf = WorkflowExecution.objects.create(
         workflow_name=workflow_name, input=inputs, expires_at=expires_at

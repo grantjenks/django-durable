@@ -1,6 +1,6 @@
 import socket
 import time
-from datetime import timedelta
+from datetime import timedelta, timedelta as _td
 
 from django.core.management.base import BaseCommand
 from django.db import DatabaseError
@@ -61,8 +61,6 @@ class Command(BaseCommand):
                     max_attempts == 0 or curr_attempt < max_attempts
                 )
                 if should_retry:
-                    from datetime import timedelta as _td
-
                     interval = policy.get('initial_interval', 1.0) * (
                         policy.get('backoff_coefficient', 2.0) ** curr_attempt
                     )
@@ -161,8 +159,6 @@ class Command(BaseCommand):
                     curr_attempt = task.attempt or 1
                     should_retry = max_attempts == 0 or curr_attempt < max_attempts
                     if should_retry:
-                        from datetime import timedelta as _td
-
                         interval = policy.get('initial_interval', 1.0) * (
                             policy.get('backoff_coefficient', 2.0) ** (curr_attempt - 1)
                         )
@@ -225,8 +221,6 @@ class Command(BaseCommand):
                 curr_attempt = task.attempt or 1
                 should_retry = max_attempts == 0 or curr_attempt < max_attempts
                 if should_retry:
-                    from datetime import timedelta as _td
-
                     interval = policy.get('initial_interval', 1.0) * (
                         policy.get('backoff_coefficient', 2.0) ** (curr_attempt - 1)
                     )

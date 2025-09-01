@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 MANAGE = str(ROOT / "manage.py")
@@ -59,8 +60,6 @@ def read_child(parent_id):
         row = cur.fetchone()
         assert row, "Child workflow not found"
         child_id_hex = row[0]
-        import uuid
-
         child_id = str(uuid.UUID(child_id_hex))
         return read_workflow(child_id)
     finally:

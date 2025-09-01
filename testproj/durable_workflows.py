@@ -1,3 +1,5 @@
+import time
+
 from django_durable.registry import register
 
 @register.workflow()
@@ -100,7 +102,6 @@ def parent_child_workflow(ctx, x: int):
 @register.workflow()
 def long_running_step_flow(ctx, loops: int, delay: float):
     """Workflow with long-running steps to test recovery when worker dies mid-execution."""
-    import time
     for i in range(loops):
         time.sleep(delay)
         ctx.activity("do_work", i)
