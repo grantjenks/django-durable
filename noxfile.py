@@ -1,6 +1,7 @@
 """Nox sessions for testing, linting, formatting, and docs."""
 
 import nox
+from pathlib import Path
 
 nox.options.sessions = ('lint', 'tests', 'docs')
 
@@ -34,7 +35,7 @@ def docs(session: nox.Session) -> None:
     """Build the documentation."""
     # Install package (with dev extras) so autodoc + Django can import settings
     session.install('.[dev]')
-    session.run('sphinx-build', '-b', 'html', 'docs', 'docs/_build')
+    session.run('sphinx-build', '-b', 'html', 'docs', 'docs/_build/html')
 
 
 @nox.session(venv_backend='uv')
@@ -56,9 +57,14 @@ def upload(session: nox.Session) -> None:
     if session.posargs:
         dest = session.posargs[0]
 
-    # Ensure docs exist; if not, guide the user.
-    index_html = 'docs/_build/html/index.html'
-    if not session.run('test', '-f', index_html, external=True, success_codes=(0, 1)) == 0:
+    # Determine built docs directory (prefer html subdir).
+    out_html = Path('docs/_build/html')
+    out_root = Path('docs/_build')
+    if (out_html / 'index.html').is_file():
+        src = str(out_html) + '/'
+    elif (out_root / 'index.html').is_file():
+        src = str(out_root) + '/'
+    else:
         session.error('Docs not found. Run: nox -s docs')
 
     session.run(
@@ -68,7 +74,7 @@ def upload(session: nox.Session) -> None:
         '-azP',
         '--stats',
         '--delete',
-        'docs/_build/html/',
+        src,
         dest,
         external=True,
     )
