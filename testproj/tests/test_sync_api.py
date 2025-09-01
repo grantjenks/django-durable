@@ -45,7 +45,7 @@ def test_start_and_wait_workflow():
 def test_activity_within_workflow():
     @register.workflow()
     def add_flow(ctx, a, b):
-        return ctx.activity("add", a, b)
+        return ctx.run_activity("add", a, b)
 
     res = run_workflow("add_flow", a=3, b=4)
     assert res == {"value": 7}
@@ -69,7 +69,7 @@ def test_run_workflow_with_child_workflow():
 
     @register.workflow()
     def parent(ctx, x):
-        return {"child": ctx.workflow("child", x=x)}
+        return {"child": ctx.run_workflow("child", x=x)}
 
     res = run_workflow("parent", x=3)
     assert res == {"child": {"res": 4}}
@@ -82,7 +82,7 @@ def test_child_workflow_failure_propagates():
 
     @register.workflow()
     def parent(ctx):
-        ctx.workflow("failing_child")
+        ctx.run_workflow("failing_child")
 
     with pytest.raises(RuntimeError):
         run_workflow("parent")

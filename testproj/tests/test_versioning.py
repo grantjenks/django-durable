@@ -41,9 +41,9 @@ def test_get_version_survives_code_change():
     def version_flow(ctx):
         v = ctx.get_version("change", 1)
         if v == 1:
-            res = ctx.activity("echo", "v1")
+            res = ctx.run_activity("echo", "v1")
         else:
-            res = ctx.activity("echo", "v2")
+            res = ctx.run_activity("echo", "v2")
         ctx.wait_signal("go")
         return res["value"]
 
@@ -56,9 +56,9 @@ def test_get_version_survives_code_change():
     def version_flow(ctx):
         v = ctx.get_version("change", 2)
         if v == 1:
-            res = ctx.activity("echo", "v1")
+            res = ctx.run_activity("echo", "v1")
         else:
-            res = ctx.activity("echo", "v2")
+            res = ctx.run_activity("echo", "v2")
         sig = ctx.wait_signal("go")
         return res["value"]
 
@@ -81,9 +81,9 @@ def test_patch_deprecation_allows_removal():
     @register.workflow(name="patch_flow")
     def patch_flow(ctx):
         if ctx.patched("feat"):
-            res = ctx.activity("echo", "new")
+            res = ctx.run_activity("echo", "new")
         else:
-            res = ctx.activity("echo", "old")
+            res = ctx.run_activity("echo", "old")
         ctx.wait_signal("go")
         return res["value"]
 
@@ -95,7 +95,7 @@ def test_patch_deprecation_allows_removal():
     @register.workflow(name="patch_flow")
     def patch_flow(ctx):
         ctx.deprecate_patch("feat")
-        res = ctx.activity("echo", "new")
+        res = ctx.run_activity("echo", "new")
         ctx.wait_signal("go")
         return res["value"]
 
