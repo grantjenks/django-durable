@@ -1,8 +1,8 @@
-import os
-import time
-import multiprocessing
-import sys
 import argparse
+import multiprocessing
+import os
+import sys
+import time
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "testproj.settings")
 
@@ -13,7 +13,8 @@ django.setup()
 
 from django.core.management import call_command
 from django.db import connection
-from django_durable.engine import start_activity, start_workflow
+
+from django_durable import start_workflow
 from django_durable.models import ActivityTask, WorkflowExecution
 
 WORKERS = 10
@@ -64,12 +65,6 @@ def _run_benchmark(start_fn, count):
         p.terminate()
         p.join()
     return count / elapsed
-
-
-def benchmark_activities(count=TASKS):
-    return _run_benchmark(lambda: start_activity("add", 1, 1), count)
-
-
 def benchmark_workflows(count=TASKS):
     return _run_benchmark(lambda: start_workflow("add_flow", a=1, b=1), count)
 
@@ -79,7 +74,5 @@ if __name__ == "__main__":
     parser.add_argument("--tasks", type=int, default=TASKS, help="Number of tasks per benchmark")
     args = parser.parse_args()
     call_command("migrate", verbosity=0, interactive=False)
-    act_rate = benchmark_activities(args.tasks)
     wf_rate = benchmark_workflows(args.tasks)
-    print(f"Activities per second: {act_rate:.2f}")
     print(f"Workflows per second: {wf_rate:.2f}")

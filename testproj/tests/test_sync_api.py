@@ -5,7 +5,6 @@ from pathlib import Path
 import django
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.append(str(ROOT))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "testproj.settings")
@@ -13,13 +12,10 @@ django.setup()
 
 from django.core.management import call_command
 
-from django_durable.engine import (
-    run_activity,
+from django_durable import (
     run_workflow,
     send_signal,
-    start_activity,
     start_workflow,
-    wait_activity,
     wait_workflow,
 )
 from django_durable.registry import register
@@ -46,15 +42,24 @@ def test_start_and_wait_workflow():
     assert res == {"attempts": 2}
 
 
-def test_run_activity():
-    res = run_activity("add", 3, 4)
+def test_activity_within_workflow():
+    @register.workflow()
+    def add_flow(ctx, a, b):
+        return ctx.activity("add", a, b)
+
+    res = run_workflow("add_flow", a=3, b=4)
     assert res == {"value": 7}
 
 
-def test_start_and_wait_activity():
-    handle = start_activity("add", 5, 6)
-    res = wait_activity(handle)
-    assert res == {"value": 11}
+def test_parallel_activities():
+    @register.workflow()
+    def parent(ctx):
+        handles = [ctx.start_activity("add", i, i + 1) for i in range(3)]
+        results = [ctx.wait_activity(h) for h in handles]
+        return {"results": results}
+
+    res = run_workflow("parent")
+    assert res == {"results": [{"value": 1}, {"value": 3}, {"value": 5}]}
 
 
 def test_run_workflow_with_child_workflow():
