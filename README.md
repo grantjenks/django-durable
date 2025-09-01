@@ -2,7 +2,7 @@
 
 Durable execution framework for Django web apps.
 
-Workflows are ordinary Python functions using `ctx.activity()` and `ctx.sleep()`. On each step, we replay from the start and use the **event log** (`HistoryEvent`) to return prior results. Avoid non-deterministic branching not derived from previous results or inputs.
+Workflows are ordinary Python functions using `ctx.run_activity()` and `ctx.sleep()`. On each step, we replay from the start and use the **event log** (`HistoryEvent`) to return prior results. Avoid non-deterministic branching not derived from previous results or inputs.
 
 Activity and workflow results must be JSON-serializable.
 

@@ -186,13 +186,9 @@ class Context:
         handle = self.start_activity(name, *args, **kwargs)
         return self.wait_activity(handle)
 
-    def activity(self, name: str, *args, **kwargs) -> Any:
-        """Alias for ``run_activity`` for backward compatibility."""
-        return self.run_activity(name, *args, **kwargs)
-
     def sleep(self, seconds: float):
         """Durable timer implemented as a special internal activity."""
-        return self.activity(SLEEP_ACTIVITY_NAME, seconds)
+        return self.run_activity(SLEEP_ACTIVITY_NAME, seconds)
 
     def wait_signal(self, name: str) -> Any:
         """Deterministic wait for an external signal.
@@ -355,10 +351,6 @@ class Context:
     def run_workflow(self, name: str, timeout: Optional[float] = None, **input) -> Any:
         handle = self.start_workflow(name, timeout=timeout, **input)
         return self.wait_workflow(handle)
-
-    def workflow(self, name: str, timeout: Optional[float] = None, **input) -> Any:
-        """Alias for ``run_workflow`` for backward compatibility."""
-        return self.run_workflow(name, timeout=timeout, **input)
 
 
 def _run_workflow_once(exec_obj: WorkflowExecution) -> Optional[Any]:
