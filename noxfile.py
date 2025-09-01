@@ -1,8 +1,8 @@
-"""Nox sessions for testing and linting."""
+"""Nox sessions for testing, linting, formatting, and docs."""
 
 import nox
 
-nox.options.sessions = ('lint', 'tests')
+nox.options.sessions = ('lint', 'tests', 'docs')
 
 
 @nox.session(venv_backend='uv')
@@ -24,5 +24,13 @@ def format(session: nox.Session) -> None:
 @nox.session(venv_backend='uv')
 def tests(session: nox.Session) -> None:
     """Run the test suite."""
-    session.install('pytest')
+    session.install('.[dev]')
+    session.run('python', 'manage.py', 'migrate', '--noinput')
     session.run('pytest')
+
+
+@nox.session(venv_backend='uv')
+def docs(session: nox.Session) -> None:
+    """Build the documentation."""
+    session.install('sphinx', 'myst-parser')
+    session.run('sphinx-build', '-b', 'html', 'docs', 'docs/_build')

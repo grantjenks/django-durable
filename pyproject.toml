@@ -16,6 +16,8 @@ dev = [
     "nox>=2024.4.15",
     "mypy>=1.11",
     "django-stubs>=5.2",
+    "sphinx>=7.2",
+    "myst-parser>=2.0",
 ]
 
 [tool.setuptools]
@@ -33,12 +35,14 @@ dev-dependencies = [
     "nox>=2024.4.15",
     "mypy>=1.11",
     "django-stubs>=5.2",
+    "sphinx>=7.2",
+    "myst-parser>=2.0",
 ]
 
 [tool.ruff]
 line-length = 88
 target-version = "py313"
-extend-exclude = ["testproj", "django_durable/migrations", "manage.py"]
+extend-exclude = ["testproj", "django_durable/migrations", "manage.py", ".nox"]
 
 [tool.ruff.format]
 quote-style = "single"
@@ -46,7 +50,7 @@ quote-style = "single"
 [tool.isort]
 profile = "black"
 line_length = 88
-skip = ["testproj", "django_durable/migrations", "manage.py", ".venv"]
+skip = ["testproj", "django_durable/migrations", "manage.py", ".venv", ".nox"]
 
 [tool.mypy]
 python_version = "3.13"
