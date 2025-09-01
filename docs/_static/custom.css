@@ -1,0 +1,25 @@
+/* Sidebar logo: enlarge by 50% and center title */
+/* Enlarge logo with layout-aware sizing (avoid transform overlap) */
+div.sphinxsidebarwrapper p.logo img.logo {
+  display: block;
+  margin: 0 auto 8px auto;
+  width: 150px;   /* safe within 220px sidebar; adjust as needed */
+  height: auto;
+}
+
+/* Center the project name under the logo */
+div.sphinxsidebarwrapper h1.logo,
+div.sphinxsidebarwrapper h1.logo a {
+  text-align: center !important;
+  display: block;
+}
+
+/* GitHub stars: centered spacing */
+/* If custom stars block is present, center it */
+div.sphinxsidebarwrapper p.github-stars {
+  text-align: center;
+  margin: 8px 0 12px 0;
+}
+
+/* Move search to bottom handled by html_sidebars ordering; ensure spacing */
+div.sphinxsidebar #searchbox { margin-top: 16px; }
