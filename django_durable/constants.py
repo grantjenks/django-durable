@@ -30,7 +30,6 @@ class ErrorCode(str, Enum):
     PARENT_CANCELED = 'parent_canceled'
 
 
-RUN_ACTIVITY_WORKFLOW = '__run_activity__'
 SLEEP_ACTIVITY_NAME = '__sleep__'
 FINAL_EVENT_POS = 999_999
 SPECIAL_EVENT_POS = 999_998

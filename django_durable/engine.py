@@ -9,7 +9,6 @@ from django.utils import timezone
 
 from .constants import (
     FINAL_EVENT_POS,
-    RUN_ACTIVITY_WORKFLOW,
     SLEEP_ACTIVITY_NAME,
     SPECIAL_EVENT_POS,
     ErrorCode,
@@ -19,11 +18,6 @@ from .models import ActivityTask, HistoryEvent, WorkflowExecution
 from .registry import register
 
 _current_activity = threading.local()
-
-
-@register.workflow(RUN_ACTIVITY_WORKFLOW)
-def _run_activity_workflow(ctx, activity_name: str, args: list, kwargs: dict):
-    return ctx.activity(activity_name, *args, **kwargs)
 
 
 class NeedsPause(Exception):
@@ -90,15 +84,72 @@ class Context:
 
         self.get_version(f'patch:{change_id}', 1)
 
-    def activity(self, name: str, *args, **kwargs) -> Any:
-        """Deterministic activity call with replay:
-        - If completed event exists for this pos -> return its result.
-        - If failed -> raise RuntimeError.
-        - If scheduled and not finished -> pause.
-        - Else schedule task -> pause.
-        """
+    def start_activity(self, name: str, *args, **kwargs) -> int:
+        """Schedule an activity and return its handle."""
         pos = self._bump()
-        # 1) Check for completion/failed
+        scheduled = HistoryEvent.objects.filter(
+            execution=self.execution,
+            pos=pos,
+            type=HistoryEventType.ACTIVITY_SCHEDULED.value,
+        ).exists()
+        if not scheduled:
+            with transaction.atomic():
+                timeout = kwargs.pop('schedule_to_close_timeout', None)
+                heartbeat = kwargs.pop('heartbeat_timeout', None)
+                fn = register.activities.get(name)
+                policy_obj = getattr(fn, '_durable_retry_policy', None) if fn else None
+                policy_dict = (
+                    policy_obj.asdict()
+                    if policy_obj
+                    else {'maximum_attempts': getattr(fn, '_durable_max_retries', 0)}
+                )
+                if timeout is None and fn is not None:
+                    timeout = getattr(fn, '_durable_timeout', None)
+                if heartbeat is None and fn is not None:
+                    heartbeat = getattr(fn, '_durable_heartbeat_timeout', None)
+                HistoryEvent.objects.create(
+                    execution=self.execution,
+                    type=HistoryEventType.ACTIVITY_SCHEDULED.value,
+                    pos=pos,
+                    details={
+                        'activity_name': name,
+                        'args': args,
+                        'kwargs': kwargs,
+                        'timeout': timeout,
+                        'heartbeat_timeout': heartbeat,
+                        'retry_policy': policy_dict,
+                    },
+                )
+                after_time = timezone.now()
+                if name == SLEEP_ACTIVITY_NAME:
+                    try:
+                        seconds = float((args or [0])[0])
+                    except Exception:
+                        seconds = 0.0
+                    if seconds < 0:
+                        seconds = 0.0
+                    after_time = after_time + timedelta(seconds=seconds)
+                expires_at = None
+                if timeout is not None:
+                    expires_at = timezone.now() + timedelta(seconds=float(timeout))
+
+                ActivityTask.objects.create(
+                    execution=self.execution,
+                    activity_name=name,
+                    pos=pos,
+                    args=args,
+                    kwargs=kwargs,
+                    max_attempts=policy_dict.get('maximum_attempts', 0),
+                    after_time=after_time,
+                    expires_at=expires_at,
+                    retry_policy=policy_dict,
+                    heartbeat_timeout=heartbeat,
+                )
+        return pos
+
+    def wait_activity(self, handle: int) -> Any:
+        """Wait for a previously started activity and return its result."""
+        pos = handle
         ev_done = (
             HistoryEvent.objects.filter(
                 execution=self.execution,
@@ -122,7 +173,6 @@ class Context:
                 )
             return ev_done.details.get('result')
 
-        # 2) If scheduled but pending -> pause
         scheduled = HistoryEvent.objects.filter(
             execution=self.execution,
             pos=pos,
@@ -130,62 +180,15 @@ class Context:
         ).exists()
         if scheduled:
             raise NeedsPause()
+        raise RuntimeError(f"Unknown activity handle {handle}")
 
-        # 3) First-time schedule
-        with transaction.atomic():
-            timeout = kwargs.pop('schedule_to_close_timeout', None)
-            heartbeat = kwargs.pop('heartbeat_timeout', None)
-            fn = register.activities.get(name)
-            policy_obj = getattr(fn, '_durable_retry_policy', None) if fn else None
-            policy_dict = (
-                policy_obj.asdict()
-                if policy_obj
-                else {'maximum_attempts': getattr(fn, '_durable_max_retries', 0)}
-            )
-            if timeout is None and fn is not None:
-                timeout = getattr(fn, '_durable_timeout', None)
-            if heartbeat is None and fn is not None:
-                heartbeat = getattr(fn, '_durable_heartbeat_timeout', None)
-            HistoryEvent.objects.create(
-                execution=self.execution,
-                type=HistoryEventType.ACTIVITY_SCHEDULED.value,
-                pos=pos,
-                details={
-                    'activity_name': name,
-                    'args': args,
-                    'kwargs': kwargs,
-                    'timeout': timeout,
-                    'heartbeat_timeout': heartbeat,
-                    'retry_policy': policy_dict,
-                },
-            )
-            # For internal sleep, defer until due time instead of immediate run.
-            after_time = timezone.now()
-            if name == SLEEP_ACTIVITY_NAME:
-                try:
-                    seconds = float((args or [0])[0])
-                except Exception:
-                    seconds = 0.0
-                if seconds < 0:
-                    seconds = 0.0
-                after_time = after_time + timedelta(seconds=seconds)
-            expires_at = None
-            if timeout is not None:
-                expires_at = timezone.now() + timedelta(seconds=float(timeout))
+    def run_activity(self, name: str, *args, **kwargs) -> Any:
+        handle = self.start_activity(name, *args, **kwargs)
+        return self.wait_activity(handle)
 
-            ActivityTask.objects.create(
-                execution=self.execution,
-                activity_name=name,
-                pos=pos,
-                args=args,
-                kwargs=kwargs,
-                max_attempts=policy_dict.get('maximum_attempts', 0),
-                after_time=after_time,
-                expires_at=expires_at,
-                retry_policy=policy_dict,
-                heartbeat_timeout=heartbeat,
-            )
-        raise NeedsPause()
+    def activity(self, name: str, *args, **kwargs) -> Any:
+        """Alias for ``run_activity`` for backward compatibility."""
+        return self.run_activity(name, *args, **kwargs)
 
     def sleep(self, seconds: float):
         """Durable timer implemented as a special internal activity."""
@@ -279,44 +282,20 @@ class Context:
                 )
         raise NeedsPause()
 
-    def workflow(self, name: str, timeout: Optional[float] = None, **input) -> Any:
-        """Start and wait for a child workflow.
-
-        Mirrors the activity API:
-        - If a completion/failed event exists for this position, return/raise.
-        - If already scheduled but not finished, pause.
-        - Otherwise schedule the child workflow and pause.
-        """
-
+    def start_workflow(self, name: str, timeout: Optional[float] = None, **input) -> str:
+        """Schedule a child workflow and return its handle."""
         pos = self._bump()
-
-        ev_done = (
+        scheduled = (
             HistoryEvent.objects.filter(
                 execution=self.execution,
                 pos=pos,
-                type__in=[
-                    HistoryEventType.CHILD_WORKFLOW_COMPLETED.value,
-                    HistoryEventType.CHILD_WORKFLOW_FAILED.value,
-                ],
+                type=HistoryEventType.CHILD_WORKFLOW_SCHEDULED.value,
             )
             .order_by('id')
             .last()
         )
-        if ev_done:
-            if ev_done.type == HistoryEventType.CHILD_WORKFLOW_FAILED.value:
-                raise RuntimeError(
-                    ev_done.details.get('error', ErrorCode.ACTIVITY_FAILED.value)
-                )
-            return ev_done.details.get('result')
-
-        scheduled = HistoryEvent.objects.filter(
-            execution=self.execution,
-            pos=pos,
-            type=HistoryEventType.CHILD_WORKFLOW_SCHEDULED.value,
-        ).exists()
         if scheduled:
-            raise NeedsPause()
-
+            return scheduled.details.get('child_id')
         with transaction.atomic():
             fn = register.workflows.get(name)
             if timeout is None and fn is not None:
@@ -342,7 +321,44 @@ class Context:
                     'timeout': timeout,
                 },
             )
-        raise NeedsPause()
+        return str(child.id)
+
+    def wait_workflow(self, handle: str) -> Any:
+        """Wait for a previously started child workflow."""
+        ev_done = (
+            HistoryEvent.objects.filter(
+                execution=self.execution,
+                type__in=[
+                    HistoryEventType.CHILD_WORKFLOW_COMPLETED.value,
+                    HistoryEventType.CHILD_WORKFLOW_FAILED.value,
+                ],
+                details__child_id=handle,
+            )
+            .order_by('id')
+            .last()
+        )
+        if ev_done:
+            if ev_done.type == HistoryEventType.CHILD_WORKFLOW_FAILED.value:
+                raise RuntimeError(
+                    ev_done.details.get('error', ErrorCode.ACTIVITY_FAILED.value)
+                )
+            return ev_done.details.get('result')
+        scheduled = HistoryEvent.objects.filter(
+            execution=self.execution,
+            type=HistoryEventType.CHILD_WORKFLOW_SCHEDULED.value,
+            details__child_id=handle,
+        ).exists()
+        if scheduled:
+            raise NeedsPause()
+        raise RuntimeError(f"Unknown workflow handle {handle}")
+
+    def run_workflow(self, name: str, timeout: Optional[float] = None, **input) -> Any:
+        handle = self.start_workflow(name, timeout=timeout, **input)
+        return self.wait_workflow(handle)
+
+    def workflow(self, name: str, timeout: Optional[float] = None, **input) -> Any:
+        """Alias for ``run_workflow`` for backward compatibility."""
+        return self.run_workflow(name, timeout=timeout, **input)
 
 
 def _run_workflow_once(exec_obj: WorkflowExecution) -> Optional[Any]:
@@ -692,7 +708,7 @@ def query_workflow(execution: Union[WorkflowExecution, str], name: str, **payloa
 # ---------------------------------------------------------------------------
 
 
-def start_workflow(
+def _start_workflow(
     workflow_name: str, timeout: Optional[float] = None, **inputs
 ) -> str:
     """Create a workflow execution and return its handle (ID)."""
@@ -763,39 +779,14 @@ def _run_loop(execution: WorkflowExecution, tick: float = 0.01):
     raise RuntimeError(execution.error or execution.status)
 
 
-def wait_workflow(execution: Union[WorkflowExecution, str]) -> Any:
+def _wait_workflow(execution: Union[WorkflowExecution, str]) -> Any:
     """Wait for a workflow execution to complete and return its result."""
     if not isinstance(execution, WorkflowExecution):
         execution = WorkflowExecution.objects.get(pk=execution)
     return _run_loop(execution)
 
 
-def run_workflow(workflow_name: str, timeout: Optional[float] = None, **inputs) -> Any:
+def _run_workflow(workflow_name: str, timeout: Optional[float] = None, **inputs) -> Any:
     """Convenience helper: start a workflow and wait for its result."""
-    exec_id = start_workflow(workflow_name, timeout=timeout, **inputs)
-    return wait_workflow(exec_id)
-
-
-def start_activity(name: str, *args, **kwargs) -> str:
-    """Start an activity as a standalone workflow and return its handle."""
-    return start_workflow(
-        RUN_ACTIVITY_WORKFLOW,
-        activity_name=name,
-        args=list(args),
-        kwargs=kwargs,
-    )
-
-
-def wait_activity(handle: Union[str, WorkflowExecution]) -> Any:
-    """Wait for a started activity and return its result."""
-    return wait_workflow(handle)
-
-
-def run_activity(name: str, *args, **kwargs) -> Any:
-    """Run an activity synchronously and return its result."""
-    return run_workflow(
-        RUN_ACTIVITY_WORKFLOW,
-        activity_name=name,
-        args=list(args),
-        kwargs=kwargs,
-    )
+    exec_id = _start_workflow(workflow_name, timeout=timeout, **inputs)
+    return _wait_workflow(exec_id)

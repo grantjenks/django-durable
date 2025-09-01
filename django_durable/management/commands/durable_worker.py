@@ -1,6 +1,7 @@
 import socket
 import time
-from datetime import timedelta, timedelta as _td
+from datetime import timedelta
+from datetime import timedelta as _td
 
 from django.core.management.base import BaseCommand
 from django.db import DatabaseError
