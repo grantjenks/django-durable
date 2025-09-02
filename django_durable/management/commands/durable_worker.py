@@ -1,5 +1,6 @@
 import socket
-import threading
+import subprocess
+import sys
 import time
 from datetime import timedelta
 from datetime import timedelta as _td
@@ -9,7 +10,6 @@ from django.db import DatabaseError, close_old_connections
 from django.utils import timezone
 
 from django_durable.constants import SPECIAL_EVENT_POS, ErrorCode, HistoryEventType
-from django_durable.engine import execute_activity, step_workflow
 from django_durable.models import ActivityTask, HistoryEvent, WorkflowExecution
 
 
@@ -26,12 +26,6 @@ class Command(BaseCommand):
             type=int,
             default=None,
             help='Optional number of loop iterations to run (for testing).',
-        )
-        parser.add_argument(
-            '--threads',
-            type=int,
-            default=1,
-            help='Number of worker threads (0 for synchronous execution).',
         )
 
     def _run_worker_loop(self, tick, batch, iterations):
@@ -282,9 +276,80 @@ class Command(BaseCommand):
                         continue
                     try:
                         task = ActivityTask.objects.get(id=tid)
-                        execute_activity(task)
                     except DatabaseError:
                         # Revert claim so another worker can retry.
+                        ActivityTask.objects.filter(id=tid).update(
+                            status=ActivityTask.Status.QUEUED
+                        )
+                        continue
+                    timeout = None
+                    if task.expires_at is not None:
+                        timeout = max(
+                            0.0,
+                            (task.expires_at - timezone.now()).total_seconds(),
+                        )
+                    cmd = [
+                        sys.executable,
+                        sys.argv[0],
+                        'durable_internal_run_activity',
+                        str(tid),
+                    ]
+                    try:
+                        close_old_connections()
+                        subprocess.run(cmd, check=False, timeout=timeout)
+                        close_old_connections()
+                    except subprocess.TimeoutExpired:
+                        task.refresh_from_db()
+                        task.error = ErrorCode.ACTIVITY_TIMEOUT.value
+                        policy = task.retry_policy or {}
+                        max_attempts = policy.get('maximum_attempts', 0)
+                        curr_attempt = task.attempt or 1
+                        should_retry = max_attempts == 0 or curr_attempt < max_attempts
+                        if should_retry:
+                            interval = policy.get('initial_interval', 1.0) * (
+                                policy.get('backoff_coefficient', 2.0)
+                                ** (curr_attempt - 1)
+                            )
+                            max_interval = policy.get('maximum_interval')
+                            if max_interval is not None:
+                                interval = min(interval, max_interval)
+                            task.status = ActivityTask.Status.QUEUED
+                            task.after_time = timezone.now() + _td(
+                                seconds=interval
+                            )
+                            task.save(
+                                update_fields=[
+                                    'status',
+                                    'error',
+                                    'after_time',
+                                    'updated_at',
+                                ]
+                            )
+                        else:
+                            task.status = ActivityTask.Status.TIMED_OUT
+                            task.finished_at = timezone.now()
+                            task.save(
+                                update_fields=[
+                                    'status',
+                                    'error',
+                                    'finished_at',
+                                    'updated_at',
+                                ]
+                            )
+                            HistoryEvent.objects.create(
+                                execution=task.execution,
+                                type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
+                                pos=task.pos,
+                                details={'error': ErrorCode.ACTIVITY_TIMEOUT.value},
+                            )
+                            WorkflowExecution.objects.filter(
+                                pk=task.execution_id,
+                                status__in=[
+                                    WorkflowExecution.Status.PENDING,
+                                    WorkflowExecution.Status.RUNNING,
+                                ],
+                            ).update(status=WorkflowExecution.Status.PENDING)
+                    except DatabaseError:
                         ActivityTask.objects.filter(id=tid).update(
                             status=ActivityTask.Status.QUEUED
                         )
@@ -303,7 +368,65 @@ class Command(BaseCommand):
                 for wid in runnable_ids:
                     try:
                         wf = WorkflowExecution.objects.get(id=wid)
-                        step_workflow(wf)
+                    except DatabaseError:
+                        continue
+                    timeout = None
+                    if wf.expires_at is not None:
+                        timeout = max(
+                            0.0,
+                            (wf.expires_at - timezone.now()).total_seconds(),
+                        )
+                    cmd = [
+                        sys.executable,
+                        sys.argv[0],
+                        'durable_internal_step_workflow',
+                        str(wid),
+                    ]
+                    try:
+                        close_old_connections()
+                        subprocess.run(cmd, check=False, timeout=timeout)
+                        close_old_connections()
+                    except subprocess.TimeoutExpired:
+                        wf.refresh_from_db()
+                        now = timezone.now()
+                        HistoryEvent.objects.create(
+                            execution=wf,
+                            type=HistoryEventType.WORKFLOW_TIMED_OUT.value,
+                            pos=SPECIAL_EVENT_POS,
+                            details={'error': ErrorCode.WORKFLOW_TIMEOUT.value},
+                        )
+                        wf.status = WorkflowExecution.Status.TIMED_OUT
+                        wf.error = ErrorCode.WORKFLOW_TIMEOUT.value
+                        wf.finished_at = now
+                        wf.save(
+                            update_fields=[
+                                'status',
+                                'error',
+                                'finished_at',
+                                'updated_at',
+                            ]
+                        )
+                        qs = ActivityTask.objects.select_for_update().filter(
+                            execution=wf, status=ActivityTask.Status.QUEUED
+                        )
+                        for t in qs:
+                            t.status = ActivityTask.Status.FAILED
+                            t.error = ErrorCode.WORKFLOW_TIMEOUT.value
+                            t.finished_at = now
+                            t.save(
+                                update_fields=[
+                                    'status',
+                                    'error',
+                                    'finished_at',
+                                    'updated_at',
+                                ]
+                            )
+                            HistoryEvent.objects.create(
+                                execution=wf,
+                                type=HistoryEventType.ACTIVITY_FAILED.value,
+                                pos=t.pos,
+                                details={'error': ErrorCode.WORKFLOW_TIMEOUT.value},
+                            )
                     except DatabaseError:
                         continue
 
@@ -319,24 +442,7 @@ class Command(BaseCommand):
         tick = opts['tick']
         batch = opts['batch']
         iterations = opts['iterations']
-        threads = opts['threads']
-        if threads < 0:
-            raise CommandError('--threads must be >= 0')
         hostname = socket.gethostname()
         self.stdout.write(self.style.SUCCESS(f'[durable] worker started on {hostname}'))
-
-        if threads == 0:
-            self._run_worker_loop(tick, batch, iterations)
-        else:
-            workers = []
-            for _ in range(threads):
-                t = threading.Thread(
-                    target=self._run_worker_loop,
-                    args=(tick, batch, iterations),
-                    daemon=True,
-                )
-                t.start()
-                workers.append(t)
-            for t in workers:
-                t.join()
+        self._run_worker_loop(tick, batch, iterations)
 

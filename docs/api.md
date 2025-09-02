@@ -140,9 +140,8 @@ def my_activity():
 
 ## Management Commands
 
-- `durable_worker [--tick FLOAT] [--batch INT] [--iterations INT] [--threads INT]`
+- `durable_worker [--tick FLOAT] [--batch INT] [--iterations INT]`
   - Runs the worker loop executing due activities and stepping runnable workflows.
-  - `--threads`: number of worker threads (0 runs synchronously in the foreground)
   - `--iterations`: stop after N iterations (testing)
 
 - `durable_start WORKFLOW_NAME [--input JSON] [--timeout FLOAT]`

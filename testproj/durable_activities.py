@@ -42,9 +42,6 @@ def do_work(i):
     return {"i": i}
 
 
-flaky_counters = {}
-
-
 @register.activity(
     retry_policy=RetryPolicy(
         initial_interval=0.1,
@@ -55,11 +52,13 @@ flaky_counters = {}
 )
 def flaky(key, fail_times):
     """Activity that fails a given number of times before succeeding."""
-    cnt = flaky_counters.get(key, 0)
-    if cnt < fail_times:
-        flaky_counters[key] = cnt + 1
+    from django_durable.engine import _current_activity
+    from django_durable.models import ActivityTask
+
+    task = ActivityTask.objects.get(id=_current_activity.task_id)
+    if task.attempt <= fail_times:
         raise ValueError("boom")
-    return {"attempts": cnt + 1}
+    return {"attempts": task.attempt}
 
 
 @register.activity(heartbeat_timeout=0.1)

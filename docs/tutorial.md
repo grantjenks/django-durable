@@ -66,11 +66,10 @@ Notes:
 Start the worker process that executes workflows and activities out-of-band. You can run multiple workers in parallel.
 
 ```bash
-python manage.py durable_worker --threads 4 --batch 20 --tick 0.2
+python manage.py durable_worker --batch 20 --tick 0.2
 ```
 
 Flags:
-- `--threads`: number of worker threads (0 runs synchronously in the main thread)
 - `--batch`: max tasks per poll
 - `--tick`: poll interval in seconds
 
