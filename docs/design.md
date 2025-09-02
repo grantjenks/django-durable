@@ -24,11 +24,12 @@ This document explains how and why Django Durable works the way it does.
 
 ## Worker Process
 
-- Implementation: management command `durable_worker` runs a polling loop (optionally multi-threaded) that:
+- Implementation: management command `durable_worker` runs a polling loop that:
   1) marks activity timeouts and heartbeats,
-  2) executes due activities,
-  3) steps runnable workflows by replaying their function until the next pause or completion.
-- Concurrency: worker threads can run activities concurrently; workflow stepping uses DB locks to avoid double-stepping.
+  2) executes due activities by spawning the `durable_internal_run_activity` command in a subprocess,
+  3) steps runnable workflows by spawning the `durable_internal_step_workflow` command in a subprocess.
+- Isolation: each activity or workflow step runs in its own process so the worker can terminate it if a timeout occurs.
+- Concurrency: run multiple worker processes across hosts; database locks prevent double execution.
 - Scheduling: activities have `after_time` and optional `expires_at`; retries use exponential backoff from `RetryPolicy`.
 
 ## Transactions and Atomicity
@@ -44,7 +45,7 @@ This document explains how and why Django Durable works the way it does.
 
 ## Scaling
 
-- Horizontal: run multiple worker processes (and threads) across hosts; DB locking prevents double execution.
+- Horizontal: run multiple worker processes across hosts; DB locking prevents double execution.
 - Database: ensure appropriate indexes (provided via migrations) and tune connections. For Postgres, consider connection pooling.
 - Timers: the worker calculates sleep time based on the next due activity to minimize idle polling.
 

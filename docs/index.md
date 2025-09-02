@@ -39,7 +39,7 @@ Run the worker and start the workflow:
 
 ```bash
 python manage.py migrate
-python manage.py durable_worker --threads 4
+python manage.py durable_worker
 python manage.py durable_start onboard_user --input '{"user_id": 7}'
 ```
 
