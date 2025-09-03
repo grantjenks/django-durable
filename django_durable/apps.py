@@ -10,3 +10,6 @@ class DjangoDurableConfig(AppConfig):
         # Auto-discover user-defined workflows/activities
         autodiscover_modules('durable_workflows')
         autodiscover_modules('durable_activities')
+
+        # Register system checks
+        from . import checks  # noqa: F401
