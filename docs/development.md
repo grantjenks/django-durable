@@ -10,8 +10,9 @@ Contributions are welcome. Please open GitHub issues for bugs and proposals.
 
 - `django_durable/`: app package
   - `models.py`: `WorkflowExecution`, `HistoryEvent`, `ActivityTask`
-  - `engine.py`: durable replay, worker helpers, signals/queries
-  - `registry.py`: `register` and `RetryPolicy` decorators
+  - `engine.py`: durable replay, worker helpers, signals
+  - `registry.py`: `register` decorators
+  - `retry.py`: `RetryPolicy` and backoff helpers
   - `management/commands/`: worker and utilities (`durable_*`)
   - `admin.py`: Django admin integration
 - `testproj/`: sample project, integration tests, and benchmark
@@ -33,7 +34,7 @@ python manage.py migrate --noinput
 pytest -q
 ```
 
-The test project (`testproj/`) includes end-to-end tests for workers, retries, timeouts, signals, queries, and synchronization helpers.
+The test project (`testproj/`) includes end-to-end tests for workers, retries, timeouts, signals, and synchronization helpers.
 
 ## Style and Type Checks
 

@@ -5,7 +5,6 @@ from .engine import (
     _start_workflow,
     _wait_workflow,
     cancel_workflow,
-    query_workflow,
     send_signal,
 )
 from .models import WorkflowExecution
@@ -15,7 +14,6 @@ __all__ = [
     "wait_workflow",
     "run_workflow",
     "send_signal",
-    "query_workflow",
     "cancel_workflow",
 ]
 

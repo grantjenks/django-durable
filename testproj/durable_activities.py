@@ -1,8 +1,9 @@
-from django_durable.registry import register, RetryPolicy
+from django_durable.registry import register
+from django_durable.retry import RetryPolicy
 from django_durable.engine import activity_heartbeat
 from time import sleep
 
-@register.activity(max_retries=3)
+@register.activity(retry_policy=RetryPolicy(maximum_attempts=3))
 def send_welcome_email(user_id: int):
     # do side-effect; return serializable result
     # (pretend)
@@ -89,7 +90,7 @@ def heartbeat_activity():
     return {"ok": True}
 
 
-@register.activity(heartbeat_timeout=0.1, max_retries=1)
+@register.activity(heartbeat_timeout=0.1, retry_policy=RetryPolicy(maximum_attempts=1))
 def no_heartbeat_activity(delay=0.2):
     sleep(delay)
     return {"ok": True}

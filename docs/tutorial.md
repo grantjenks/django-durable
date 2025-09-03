@@ -51,9 +51,9 @@ from django_durable.registry import register
 
 @register.workflow()
 def onboard_user(ctx, user_id: int):
-    ctx.run_activity("send_welcome_email", user_id)
+    ctx.run_activity("yourapp.send_welcome_email", user_id)
     ctx.sleep(3600)  # durable timer; no thread blocked
-    score = ctx.run_activity("compute_score", user_id)
+    score = ctx.run_activity("yourapp.compute_score", user_id)
     return {"ok": True, "score": score["score"]}
 ```
 
@@ -79,7 +79,7 @@ Flags:
 Start from the CLI:
 
 ```bash
-python manage.py durable_start onboard_user --input '{"user_id": 7}'
+python manage.py durable_start yourapp.onboard_user --input '{"user_id": 7}'
 ```
 
 Or programmatically:
@@ -87,7 +87,7 @@ Or programmatically:
 ```python
 from django_durable import start_workflow, wait_workflow
 
-exec_id = start_workflow("onboard_user", user_id=7)
+exec_id = start_workflow("yourapp.onboard_user", user_id=7)
 result = wait_workflow(exec_id)  # blocks until completion
 ```
 
@@ -95,7 +95,7 @@ Alternatively, you can run synchronously for testing without a long-lived worker
 
 ```python
 from django_durable import run_workflow
-result = run_workflow("onboard_user", user_id=7)
+result = run_workflow("yourapp.onboard_user", user_id=7)
 ```
 
 ## 4) Monitor in Admin

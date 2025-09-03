@@ -3,7 +3,6 @@ __all__ = [
     "wait_workflow",
     "run_workflow",
     "send_signal",
-    "query_workflow",
     "cancel_workflow",
 ]
 
