@@ -16,11 +16,11 @@ from django.core.management import call_command
 from django_durable import (
     cancel_workflow,
     run_workflow,
-    send_signal,
+    signal_workflow,
     start_workflow,
     wait_workflow,
+    register,
 )
-from django_durable.registry import register
 from django_durable.exceptions import (
     ActivityTimeout,
     NondeterminismError,
@@ -107,8 +107,8 @@ def test_signal_queue_consumed_in_order():
         return {"signals": [first, second]}
 
     handle = start_workflow("testproj.sig_flow")
-    send_signal(handle, "go", {"n": 1})
-    send_signal(handle, "go", {"n": 2})
+    signal_workflow(handle, "go", {"n": 1})
+    signal_workflow(handle, "go", {"n": 2})
     res = wait_workflow(handle)
     assert res == {"signals": [{"n": 1}, {"n": 2}]}
 

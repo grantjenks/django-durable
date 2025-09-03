@@ -1,6 +1,6 @@
 import time
 
-from django_durable.registry import register
+from django_durable import register
 
 @register.workflow()
 def onboard_user(ctx, user_id: int):

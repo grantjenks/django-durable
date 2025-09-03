@@ -33,7 +33,7 @@ python manage.py createsuperuser  # optional, for admin
 
 ```python
 # yourapp/durable_activities.py
-from django_durable.registry import register
+from django_durable import register
 
 @register.activity()
 def send_welcome_email(user_id: int):
@@ -47,7 +47,7 @@ def compute_score(user_id: int):
 
 ```python
 # yourapp/durable_workflows.py
-from django_durable.registry import register
+from django_durable import register
 
 @register.workflow()
 def onboard_user(ctx, user_id: int):
@@ -127,8 +127,8 @@ python manage.py durable_signal <execution_uuid> go --input '{"clicked": true}'
 ```
 
 ```python
-from django_durable import send_signal
-send_signal(exec_id, "go", {"clicked": True})
+from django_durable import signal_workflow
+signal_workflow(exec_id, "go", {"clicked": True})
 ```
 
 ## 6) Prove Durability

@@ -5,7 +5,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from django_durable.models import WorkflowExecution
-from django_durable.registry import register
+from django_durable import register
 
 
 class Command(BaseCommand):

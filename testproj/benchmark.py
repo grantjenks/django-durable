@@ -110,7 +110,7 @@ def main() -> None:
 
     django.setup()
 
-    from django_durable.registry import register
+    from django_durable import register
 
     @register.activity()
     def bench_activity(payload: str) -> dict:

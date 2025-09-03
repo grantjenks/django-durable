@@ -29,8 +29,8 @@ python manage.py durable_signal <execution_uuid> user_clicked --input '{"clicked
 You can also send a signal programmatically:
 
 ```python
-from django_durable import send_signal
-send_signal(execution_id, "user_clicked", {"clicked": True})
+from django_durable import signal_workflow
+signal_workflow(execution_id, "user_clicked", {"clicked": True})
 ```
 
 ## Cancellation

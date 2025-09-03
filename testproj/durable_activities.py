@@ -1,4 +1,4 @@
-from django_durable.registry import register
+from django_durable import register
 from django_durable.retry import RetryPolicy
 from django_durable.engine import activity_heartbeat
 from time import sleep

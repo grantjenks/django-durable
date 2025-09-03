@@ -5,16 +5,18 @@ from .engine import (
     _start_workflow,
     _wait_workflow,
     cancel_workflow,
-    send_signal,
+    signal_workflow,
 )
 from .models import WorkflowExecution
+from .registry import register
 
 __all__ = [
     "start_workflow",
     "wait_workflow",
     "run_workflow",
-    "send_signal",
+    "signal_workflow",
     "cancel_workflow",
+    "register",
 ]
 
 def start_workflow(workflow_name: str, timeout: Optional[float] = None, **inputs) -> str:

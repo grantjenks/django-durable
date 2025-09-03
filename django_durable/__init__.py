@@ -2,8 +2,9 @@ __all__ = [
     "start_workflow",
     "wait_workflow",
     "run_workflow",
-    "send_signal",
+    "signal_workflow",
     "cancel_workflow",
+    "register",
 ]
 
 
