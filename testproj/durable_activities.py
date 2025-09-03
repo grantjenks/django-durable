@@ -61,6 +61,25 @@ def flaky(key, fail_times):
     return {"attempts": task.attempt}
 
 
+@register.activity(
+    retry_policy=RetryPolicy(
+        initial_interval=0.1,
+        strategy='linear',
+        maximum_interval=1.0,
+        maximum_attempts=3,
+    )
+)
+def flaky_linear(key, fail_times):
+    """Like ``flaky`` but with linear backoff."""
+    from django_durable.engine import _current_activity
+    from django_durable.models import ActivityTask
+
+    task = ActivityTask.objects.get(id=_current_activity.task_id)
+    if task.attempt <= fail_times:
+        raise ValueError("boom")
+    return {"attempts": task.attempt}
+
+
 @register.activity(heartbeat_timeout=0.1)
 def heartbeat_activity():
     activity_heartbeat({"beat": 1})

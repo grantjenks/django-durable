@@ -9,6 +9,7 @@ from django.core.management.base import BaseCommand
 from django.db import DatabaseError, close_old_connections
 from django.utils import timezone
 
+from django_durable.backoff import compute_backoff
 from django_durable.constants import SPECIAL_EVENT_POS, ErrorCode, HistoryEventType
 from django_durable.models import ActivityTask, HistoryEvent, WorkflowExecution
 
@@ -59,19 +60,19 @@ class Command(BaseCommand):
                         max_attempts == 0 or curr_attempt < max_attempts
                     )
                     if should_retry:
-                        interval = policy.get('initial_interval', 1.0) * (
-                            policy.get('backoff_coefficient', 2.0) ** curr_attempt
-                        )
-                        max_interval = policy.get('maximum_interval')
-                        if max_interval is not None:
-                            interval = min(interval, max_interval)
+                        interval = compute_backoff(policy, curr_attempt + 1)
                         task.after_time = timezone.now() + _td(seconds=interval)
                         task.save(update_fields=['error', 'after_time', 'updated_at'])
                     else:
                         task.status = ActivityTask.Status.TIMED_OUT
                         task.finished_at = now
                         task.save(
-                            update_fields=['status', 'error', 'finished_at', 'updated_at']
+                            update_fields=[
+                                'status',
+                                'error',
+                                'finished_at',
+                                'updated_at',
+                            ]
                         )
                         HistoryEvent.objects.create(
                             execution=task.execution,
@@ -114,7 +115,9 @@ class Command(BaseCommand):
                     wf.status = WorkflowExecution.Status.TIMED_OUT
                     wf.error = ErrorCode.WORKFLOW_TIMEOUT.value
                     wf.finished_at = now
-                    wf.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+                    wf.save(
+                        update_fields=['status', 'error', 'finished_at', 'updated_at']
+                    )
                     qs = ActivityTask.objects.select_for_update().filter(
                         execution=wf, status=ActivityTask.Status.QUEUED
                     )
@@ -123,7 +126,12 @@ class Command(BaseCommand):
                         t.error = ErrorCode.WORKFLOW_TIMEOUT.value
                         t.finished_at = now
                         t.save(
-                            update_fields=['status', 'error', 'finished_at', 'updated_at']
+                            update_fields=[
+                                'status',
+                                'error',
+                                'finished_at',
+                                'updated_at',
+                            ]
                         )
                         HistoryEvent.objects.create(
                             execution=wf,
@@ -149,7 +157,8 @@ class Command(BaseCommand):
                     hb_at = task.heartbeat_at or task.started_at or now
                     if (
                         task.heartbeat_timeout is not None
-                        and hb_at + timedelta(seconds=float(task.heartbeat_timeout)) <= now
+                        and hb_at + timedelta(seconds=float(task.heartbeat_timeout))
+                        <= now
                     ):
                         task.error = ErrorCode.HEARTBEAT_TIMEOUT.value
                         policy = task.retry_policy or {}
@@ -157,12 +166,7 @@ class Command(BaseCommand):
                         curr_attempt = task.attempt or 1
                         should_retry = max_attempts == 0 or curr_attempt < max_attempts
                         if should_retry:
-                            interval = policy.get('initial_interval', 1.0) * (
-                                policy.get('backoff_coefficient', 2.0) ** (curr_attempt - 1)
-                            )
-                            max_interval = policy.get('maximum_interval')
-                            if max_interval is not None:
-                                interval = min(interval, max_interval)
+                            interval = compute_backoff(policy, curr_attempt)
                             task.status = ActivityTask.Status.QUEUED
                             task.after_time = timezone.now() + _td(seconds=interval)
                             task.save(
@@ -219,22 +223,27 @@ class Command(BaseCommand):
                     curr_attempt = task.attempt or 1
                     should_retry = max_attempts == 0 or curr_attempt < max_attempts
                     if should_retry:
-                        interval = policy.get('initial_interval', 1.0) * (
-                            policy.get('backoff_coefficient', 2.0) ** (curr_attempt - 1)
-                        )
-                        max_interval = policy.get('maximum_interval')
-                        if max_interval is not None:
-                            interval = min(interval, max_interval)
+                        interval = compute_backoff(policy, curr_attempt)
                         task.status = ActivityTask.Status.QUEUED
                         task.after_time = timezone.now() + _td(seconds=interval)
                         task.save(
-                            update_fields=['status', 'error', 'after_time', 'updated_at']
+                            update_fields=[
+                                'status',
+                                'error',
+                                'after_time',
+                                'updated_at',
+                            ]
                         )
                     else:
                         task.status = ActivityTask.Status.TIMED_OUT
                         task.finished_at = now
                         task.save(
-                            update_fields=['status', 'error', 'finished_at', 'updated_at']
+                            update_fields=[
+                                'status',
+                                'error',
+                                'finished_at',
+                                'updated_at',
+                            ]
                         )
                         HistoryEvent.objects.create(
                             execution=task.execution,
@@ -306,17 +315,9 @@ class Command(BaseCommand):
                         curr_attempt = task.attempt or 1
                         should_retry = max_attempts == 0 or curr_attempt < max_attempts
                         if should_retry:
-                            interval = policy.get('initial_interval', 1.0) * (
-                                policy.get('backoff_coefficient', 2.0)
-                                ** (curr_attempt - 1)
-                            )
-                            max_interval = policy.get('maximum_interval')
-                            if max_interval is not None:
-                                interval = min(interval, max_interval)
+                            interval = compute_backoff(policy, curr_attempt)
                             task.status = ActivityTask.Status.QUEUED
-                            task.after_time = timezone.now() + _td(
-                                seconds=interval
-                            )
+                            task.after_time = timezone.now() + _td(seconds=interval)
                             task.save(
                                 update_fields=[
                                     'status',
@@ -445,4 +446,3 @@ class Command(BaseCommand):
         hostname = socket.gethostname()
         self.stdout.write(self.style.SUCCESS(f'[durable] worker started on {hostname}'))
         self._run_worker_loop(tick, batch, iterations)
-
