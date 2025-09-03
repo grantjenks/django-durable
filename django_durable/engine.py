@@ -16,6 +16,12 @@ from .constants import (
 )
 from .models import ActivityTask, HistoryEvent, WorkflowExecution
 from .registry import register
+from .exceptions import (
+    ActivityError,
+    ActivityTimeout,
+    WorkflowException,
+    WorkflowTimeout,
+)
 
 _current_activity = threading.local()
 
@@ -164,13 +170,12 @@ class Context:
             .last()
         )
         if ev_done:
-            if ev_done.type in (
-                HistoryEventType.ACTIVITY_FAILED.value,
-                HistoryEventType.ACTIVITY_TIMED_OUT.value,
-            ):
-                raise RuntimeError(
-                    ev_done.details.get('error', ErrorCode.ACTIVITY_FAILED.value)
-                )
+            if ev_done.type == HistoryEventType.ACTIVITY_FAILED.value:
+                err = ev_done.details.get('error', ErrorCode.ACTIVITY_FAILED.value)
+                raise ActivityError(RuntimeError(err))
+            if ev_done.type == HistoryEventType.ACTIVITY_TIMED_OUT.value:
+                err = ev_done.details.get('error', ErrorCode.ACTIVITY_TIMEOUT.value)
+                raise ActivityTimeout(err)
             return ev_done.details.get('result')
 
         scheduled = HistoryEvent.objects.filter(
@@ -335,9 +340,10 @@ class Context:
         )
         if ev_done:
             if ev_done.type == HistoryEventType.CHILD_WORKFLOW_FAILED.value:
-                raise RuntimeError(
-                    ev_done.details.get('error', ErrorCode.ACTIVITY_FAILED.value)
-                )
+                err = ev_done.details.get('error', ErrorCode.ACTIVITY_FAILED.value)
+                if err == ErrorCode.WORKFLOW_TIMEOUT.value:
+                    raise WorkflowTimeout(err)
+                raise WorkflowException(err)
             return ev_done.details.get('result')
         scheduled = HistoryEvent.objects.filter(
             execution=self.execution,
@@ -768,7 +774,9 @@ def _run_loop(execution: WorkflowExecution, tick: float = 0.01):
 
     if execution.status == WorkflowExecution.Status.COMPLETED:
         return execution.result
-    raise RuntimeError(execution.error or execution.status)
+    if execution.status == WorkflowExecution.Status.TIMED_OUT:
+        raise WorkflowTimeout(execution.error or ErrorCode.WORKFLOW_TIMEOUT.value)
+    raise WorkflowException(execution.error or execution.status)
 
 
 def _wait_workflow(execution: Union[WorkflowExecution, str]) -> Any:

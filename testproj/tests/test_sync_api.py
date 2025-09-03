@@ -19,6 +19,14 @@ from django_durable import (
     wait_workflow,
 )
 from django_durable.registry import register
+from django_durable.exceptions import (
+    ActivityTimeout,
+    WorkflowException,
+    WorkflowTimeout,
+)
+from django_durable.engine import Context
+from django_durable.models import WorkflowExecution, HistoryEvent
+from django_durable.constants import HistoryEventType, ErrorCode
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -84,7 +92,7 @@ def test_child_workflow_failure_propagates():
     def parent(ctx):
         ctx.run_workflow("failing_child")
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(WorkflowException):
         run_workflow("parent")
 
 
@@ -100,4 +108,27 @@ def test_signal_queue_consumed_in_order():
     send_signal(handle, "go", {"n": 2})
     res = wait_workflow(handle)
     assert res == {"signals": [{"n": 1}, {"n": 2}]}
+
+
+def test_activity_timeout_can_be_caught():
+    wf = WorkflowExecution.objects.create(workflow_name="wf")
+    HistoryEvent.objects.create(
+        execution=wf,
+        type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
+        pos=1,
+        details={"error": ErrorCode.ACTIVITY_TIMEOUT.value},
+    )
+    ctx = Context(execution=wf)
+    with pytest.raises(ActivityTimeout):
+        ctx.wait_activity(1)
+
+
+def test_wait_workflow_raises_workflowtimeout():
+    wf = WorkflowExecution.objects.create(
+        workflow_name="wf",
+        status=WorkflowExecution.Status.TIMED_OUT,
+        error=ErrorCode.WORKFLOW_TIMEOUT.value,
+    )
+    with pytest.raises(WorkflowTimeout):
+        wait_workflow(wf)
 
