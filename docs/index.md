@@ -12,7 +12,7 @@ Define activities and a workflow in your Django app (auto-discovered from `durab
 
 ```python
 # myapp/durable_activities.py
-from django_durable.registry import register
+from django_durable import register
 
 @register.activity()
 def send_email(user_id: int):
@@ -25,7 +25,7 @@ def compute_score(user_id: int):
 
 ```python
 # myapp/durable_workflows.py
-from django_durable.registry import register
+from django_durable import register
 
 @register.workflow()
 def onboard_user(ctx, user_id: int):

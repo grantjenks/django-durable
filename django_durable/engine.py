@@ -651,10 +651,10 @@ def cancel_workflow(
         )
 
 
-def send_signal(
+def signal_workflow(
     execution: Union[WorkflowExecution, str], name: str, payload: Any = None
 ):
-    """Enqueue an external signal for a workflow and mark it runnable.
+    """Signal a workflow by enqueueing an external signal and mark it runnable.
 
     - Appends a 'signal_enqueued' HistoryEvent with the given name/payload.
     - Sets the workflow status to PENDING if it is not terminal.

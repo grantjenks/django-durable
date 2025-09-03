@@ -41,7 +41,7 @@ result = wait_workflow(exec_id)
 - Params: `workflow_name: str`, `timeout: float | None = None`, `**inputs`
 - Returns: JSON-serializable result
 
-```{autofunction} django_durable.api.send_signal
+```{autofunction} django_durable.api.signal_workflow
 ```
 
 - Summary: Enqueue an external signal for a workflow and mark it runnable.
@@ -50,8 +50,8 @@ result = wait_workflow(exec_id)
 - Example:
 
 ```python
-from django_durable import send_signal
-send_signal(exec_id, "go", {"clicked": True})
+from django_durable import signal_workflow
+signal_workflow(exec_id, "go", {"clicked": True})
 ```
 
 ```{autofunction} django_durable.api.cancel_workflow
@@ -70,7 +70,7 @@ cancel_workflow(exec_id, reason="user requested")
 
 ## Registry and Decorators
 
-The registry provides decorators to declare workflows and activities. Import from `django_durable.registry`.
+The registry provides decorators to declare workflows and activities. Import from `django_durable`.
 
 - `register.workflow(timeout: float | None = None)`
   - Registers a workflow function. The function signature is `fn(ctx, **inputs)` and must be deterministic relative to inputs and prior results.
@@ -78,7 +78,7 @@ The registry provides decorators to declare workflows and activities. Import fro
   - Optional `timeout` sets a deadline for the workflow; when exceeded, the workflow times out and children are canceled.
   - Example:
     ```python
-    from django_durable.registry import register
+    from django_durable import register
 
     @register.workflow(timeout=3600)
     def add_flow(ctx, a: int, b: int):
@@ -92,7 +92,7 @@ The registry provides decorators to declare workflows and activities. Import fro
   - Timeouts: `timeout` sets schedule-to-close deadline; `heartbeat_timeout` enforces activity heartbeats.
   - Example:
     ```python
-    from django_durable.registry import register
+    from django_durable import register
     from django_durable.retry import RetryPolicy
 
     @register.activity(

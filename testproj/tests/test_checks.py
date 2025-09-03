@@ -10,7 +10,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "testproj.settings")
 django.setup()
 
 from django.core.checks import run_checks
-from django_durable.registry import register
+from django_durable import register
 
 
 def test_warns_on_nondeterministic_code():

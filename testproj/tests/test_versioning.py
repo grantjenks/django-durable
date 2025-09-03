@@ -11,9 +11,8 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "testproj.settings")
 django.setup()
 
 from django.core.management import call_command
-from django_durable.registry import register
+from django_durable import engine, register
 from django_durable.models import WorkflowExecution, ActivityTask
-from django_durable import engine
 import testproj.durable_activities  # ensure activities registered
 
 
@@ -62,14 +61,14 @@ def test_get_version_survives_code_change():
         sig = ctx.wait_signal("go")
         return res["value"]
 
-    engine.send_signal(exec1, "go")
+    engine.signal_workflow(exec1, "go")
     engine.step_workflow(exec1)
     exec1.refresh_from_db()
     assert exec1.result == "v1"
 
     exec2 = WorkflowExecution.objects.create(workflow_name="testproj.version_flow", input={})
     _step_to_waiting(exec2)
-    engine.send_signal(exec2, "go")
+    engine.signal_workflow(exec2, "go")
     engine.step_workflow(exec2)
     exec2.refresh_from_db()
     assert exec2.result == "v2"
@@ -99,14 +98,14 @@ def test_patch_deprecation_allows_removal():
         ctx.wait_signal("go")
         return res["value"]
 
-    engine.send_signal(exec1, "go")
+    engine.signal_workflow(exec1, "go")
     engine.step_workflow(exec1)
     exec1.refresh_from_db()
     assert exec1.result == "new"
 
     exec2 = WorkflowExecution.objects.create(workflow_name="testproj.patch_flow", input={})
     _step_to_waiting(exec2)
-    engine.send_signal(exec2, "go")
+    engine.signal_workflow(exec2, "go")
     engine.step_workflow(exec2)
     exec2.refresh_from_db()
     assert exec2.result == "new"
