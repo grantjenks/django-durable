@@ -84,3 +84,7 @@ sqlite     10       0    200.0    210.0        4.92
 
 These numbers provide a rough sense of system overhead; actual throughput will
 vary based on hardware and configuration.
+
+## License
+
+This project is licensed under the Apache License, Version 2.0. See the [LICENSE](LICENSE) file for details.
