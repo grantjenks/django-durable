@@ -1,7 +1,8 @@
 """Nox sessions for testing, linting, formatting, and docs."""
 
-import nox
 from pathlib import Path
+
+import nox
 
 nox.options.sessions = ('lint', 'tests', 'docs')
 
