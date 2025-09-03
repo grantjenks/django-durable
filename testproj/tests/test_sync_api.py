@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from pathlib import Path
@@ -21,6 +22,7 @@ from django_durable import (
 from django_durable.registry import register
 from django_durable.exceptions import (
     ActivityTimeout,
+    NondeterminismError,
     WorkflowException,
     WorkflowTimeout,
 )
@@ -131,4 +133,21 @@ def test_wait_workflow_raises_workflowtimeout():
     )
     with pytest.raises(WorkflowTimeout):
         wait_workflow(wf)
+
+
+def test_activity_input_mismatch_raises_nondeterminism():
+    wf = WorkflowExecution.objects.create(workflow_name="wf")
+    ctx = Context(execution=wf)
+    ctx.start_activity("add", 1, b=2)
+    ev = HistoryEvent.objects.get(
+        execution=wf,
+        pos=0,
+        type=HistoryEventType.ACTIVITY_SCHEDULED.value,
+    )
+    assert ev.details["input"] == json.dumps({"args": [1], "kwargs": {"b": 2}})
+    ctx_replay = Context(execution=wf)
+    ctx_replay.start_activity("add", 1, b=2)
+    ctx_mismatch = Context(execution=wf)
+    with pytest.raises(NondeterminismError):
+        ctx_mismatch.start_activity("add", 1, b=3)
 
