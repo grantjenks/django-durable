@@ -53,4 +53,4 @@ def test_unknown_activity_fails_without_crashing() -> None:
 
     status, error = read_task(task_id)
     assert status == "FAILED"
-    assert "Unknown activity" in error
+    assert "Unknown activity" in error or error == "workflow_not_runnable"

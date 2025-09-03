@@ -70,9 +70,24 @@ def test_activity_timeout_kills_process():
     exec_id = out.stdout.strip().splitlines()[-1]
 
     start = time.time()
-    run_manage("durable_worker", "--tick", "0", "--batch", "10", "--iterations", "5")
+    run_manage(
+        "durable_worker",
+        "--tick",
+        "0",
+        "--batch",
+        "10",
+        "--iterations",
+        "5",
+        "--procs",
+        "1",
+    )
     elapsed = time.time() - start
     assert elapsed < 4, f"worker took too long: {elapsed}s"
 
     assert read_activity_status(exec_id) in {"TIMED_OUT", "QUEUED"}
     assert read_workflow(exec_id) in {"RUNNING", "PENDING"}
+
+
+def test_procs_arg_positive():
+    res = run_manage("durable_worker", "--procs", "0", check=False)
+    assert res.returncode != 0

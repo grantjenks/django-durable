@@ -14,7 +14,7 @@ python manage.py durable_start onboard_user --input '{"user_id": 7}'
 ```
 
 ```bash
-python manage.py durable_worker --batch 20 --tick 0.2
+python manage.py durable_worker --batch 20 --tick 0.2 --procs 4
 ```
 
 ## Queries

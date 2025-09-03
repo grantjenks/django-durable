@@ -5,7 +5,7 @@ import time
 from datetime import timedelta
 from datetime import timedelta as _td
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import DatabaseError, close_old_connections
 from django.utils import timezone
 
@@ -28,14 +28,109 @@ class Command(BaseCommand):
             default=None,
             help='Optional number of loop iterations to run (for testing).',
         )
+        parser.add_argument(
+            '--procs',
+            type=int,
+            default=4,
+            help='Max subprocesses to manage concurrently.',
+        )
 
-    def _run_worker_loop(self, tick, batch, iterations):
+    def _timeout_activity(self, task):
+        task.error = ErrorCode.ACTIVITY_TIMEOUT.value
+        policy = task.retry_policy or {}
+        max_attempts = policy.get('maximum_attempts', 0)
+        curr_attempt = task.attempt or 1
+        should_retry = max_attempts == 0 or curr_attempt < max_attempts
+        if should_retry:
+            interval = compute_backoff(policy, curr_attempt)
+            task.status = ActivityTask.Status.QUEUED
+            task.after_time = timezone.now() + _td(seconds=interval)
+            task.save(update_fields=['status', 'error', 'after_time', 'updated_at'])
+        else:
+            task.status = ActivityTask.Status.TIMED_OUT
+            task.finished_at = timezone.now()
+            task.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+            HistoryEvent.objects.create(
+                execution=task.execution,
+                type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
+                pos=task.pos,
+                details={'error': ErrorCode.ACTIVITY_TIMEOUT.value},
+            )
+            WorkflowExecution.objects.filter(
+                pk=task.execution_id,
+                status__in=[
+                    WorkflowExecution.Status.PENDING,
+                    WorkflowExecution.Status.RUNNING,
+                ],
+            ).update(status=WorkflowExecution.Status.PENDING)
+
+    def _timeout_workflow(self, wf):
+        now = timezone.now()
+        HistoryEvent.objects.create(
+            execution=wf,
+            type=HistoryEventType.WORKFLOW_TIMED_OUT.value,
+            pos=SPECIAL_EVENT_POS,
+            details={'error': ErrorCode.WORKFLOW_TIMEOUT.value},
+        )
+        wf.status = WorkflowExecution.Status.TIMED_OUT
+        wf.error = ErrorCode.WORKFLOW_TIMEOUT.value
+        wf.finished_at = now
+        wf.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+        qs = ActivityTask.objects.select_for_update().filter(
+            execution=wf, status=ActivityTask.Status.QUEUED
+        )
+        for t in qs:
+            t.status = ActivityTask.Status.FAILED
+            t.error = ErrorCode.WORKFLOW_TIMEOUT.value
+            t.finished_at = now
+            t.save(
+                update_fields=[
+                    'status',
+                    'error',
+                    'finished_at',
+                    'updated_at',
+                ]
+            )
+            HistoryEvent.objects.create(
+                execution=wf,
+                type=HistoryEventType.ACTIVITY_FAILED.value,
+                pos=t.pos,
+                details={'error': ErrorCode.WORKFLOW_TIMEOUT.value},
+            )
+
+    def _run_worker_loop(self, tick, batch, iterations, procs):
         close_old_connections()
         try:
             loops = 0
+            running = []
             while True:
                 now = timezone.now()
                 progressed = False
+
+                for info in list(running):
+                    proc = info['proc']
+                    if proc.poll() is not None:
+                        running.remove(info)
+                        progressed = True
+                        continue
+                    deadline = info.get('deadline')
+                    if deadline is not None and now >= deadline:
+                        proc.kill()
+                        proc.wait()
+                        if info['type'] == 'activity':
+                            try:
+                                task = ActivityTask.objects.get(id=info['id'])
+                                self._timeout_activity(task)
+                            except ActivityTask.DoesNotExist:
+                                pass
+                        else:
+                            try:
+                                wf = WorkflowExecution.objects.get(id=info['id'])
+                                self._timeout_workflow(wf)
+                            except WorkflowExecution.DoesNotExist:
+                                pass
+                        running.remove(info)
+                        progressed = True
 
                 # 0) Timeout queued activities
                 timed_ids = list(
@@ -260,22 +355,27 @@ class Command(BaseCommand):
                         ).update(status=WorkflowExecution.Status.PENDING)
 
                 # 1) Run due activities
-                due_ids = list(
-                    ActivityTask.objects.filter(
-                        status=ActivityTask.Status.QUEUED,
-                        after_time__lte=now,
-                        execution__status__in=[
-                            WorkflowExecution.Status.PENDING,
-                            WorkflowExecution.Status.RUNNING,
-                        ],
+                slots = procs - len(running)
+                if slots > 0:
+                    due_ids = list(
+                        ActivityTask.objects.filter(
+                            status=ActivityTask.Status.QUEUED,
+                            after_time__lte=now,
+                            execution__status__in=[
+                                WorkflowExecution.Status.PENDING,
+                                WorkflowExecution.Status.RUNNING,
+                            ],
+                        )
+                        .order_by('updated_at')
+                        .values_list('id', flat=True)[:batch]
                     )
-                    .order_by('updated_at')
-                    .values_list('id', flat=True)[:batch]
-                )
+                else:
+                    due_ids = []
                 if due_ids:
                     progressed = True
                 for tid in due_ids:
-                    # Claim the task atomically so other workers skip it.
+                    if len(running) >= procs:
+                        break
                     claimed = ActivityTask.objects.filter(
                         id=tid,
                         status=ActivityTask.Status.QUEUED,
@@ -286,7 +386,6 @@ class Command(BaseCommand):
                     try:
                         task = ActivityTask.objects.get(id=tid)
                     except DatabaseError:
-                        # Revert claim so another worker can retry.
                         ActivityTask.objects.filter(id=tid).update(
                             status=ActivityTask.Status.QUEUED
                         )
@@ -305,68 +404,43 @@ class Command(BaseCommand):
                     ]
                     try:
                         close_old_connections()
-                        subprocess.run(cmd, check=False, timeout=timeout)
+                        proc = subprocess.Popen(cmd)
                         close_old_connections()
-                    except subprocess.TimeoutExpired:
-                        task.refresh_from_db()
-                        task.error = ErrorCode.ACTIVITY_TIMEOUT.value
-                        policy = task.retry_policy or {}
-                        max_attempts = policy.get('maximum_attempts', 0)
-                        curr_attempt = task.attempt or 1
-                        should_retry = max_attempts == 0 or curr_attempt < max_attempts
-                        if should_retry:
-                            interval = compute_backoff(policy, curr_attempt)
-                            task.status = ActivityTask.Status.QUEUED
-                            task.after_time = timezone.now() + _td(seconds=interval)
-                            task.save(
-                                update_fields=[
-                                    'status',
-                                    'error',
-                                    'after_time',
-                                    'updated_at',
-                                ]
-                            )
-                        else:
-                            task.status = ActivityTask.Status.TIMED_OUT
-                            task.finished_at = timezone.now()
-                            task.save(
-                                update_fields=[
-                                    'status',
-                                    'error',
-                                    'finished_at',
-                                    'updated_at',
-                                ]
-                            )
-                            HistoryEvent.objects.create(
-                                execution=task.execution,
-                                type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
-                                pos=task.pos,
-                                details={'error': ErrorCode.ACTIVITY_TIMEOUT.value},
-                            )
-                            WorkflowExecution.objects.filter(
-                                pk=task.execution_id,
-                                status__in=[
-                                    WorkflowExecution.Status.PENDING,
-                                    WorkflowExecution.Status.RUNNING,
-                                ],
-                            ).update(status=WorkflowExecution.Status.PENDING)
-                    except DatabaseError:
+                    except Exception:
                         ActivityTask.objects.filter(id=tid).update(
                             status=ActivityTask.Status.QUEUED
                         )
                         continue
+                    deadline = (
+                        timezone.now() + _td(seconds=timeout)
+                        if timeout is not None
+                        else None
+                    )
+                    running.append(
+                        {
+                            'type': 'activity',
+                            'id': tid,
+                            'proc': proc,
+                            'deadline': deadline,
+                        }
+                    )
 
                 # 2) Advance workflows
-                runnable_ids = list(
-                    WorkflowExecution.objects.filter(
-                        status=WorkflowExecution.Status.PENDING
+                if len(running) < procs:
+                    runnable_ids = list(
+                        WorkflowExecution.objects.filter(
+                            status=WorkflowExecution.Status.PENDING
+                        )
+                        .order_by('updated_at')
+                        .values_list('id', flat=True)[:batch]
                     )
-                    .order_by('updated_at')
-                    .values_list('id', flat=True)[:batch]
-                )
+                else:
+                    runnable_ids = []
                 if runnable_ids:
                     progressed = True
                 for wid in runnable_ids:
+                    if len(running) >= procs:
+                        break
                     try:
                         wf = WorkflowExecution.objects.get(id=wid)
                     except DatabaseError:
@@ -385,54 +459,26 @@ class Command(BaseCommand):
                     ]
                     try:
                         close_old_connections()
-                        subprocess.run(cmd, check=False, timeout=timeout)
+                        proc = subprocess.Popen(cmd)
                         close_old_connections()
-                    except subprocess.TimeoutExpired:
-                        wf.refresh_from_db()
-                        now = timezone.now()
-                        HistoryEvent.objects.create(
-                            execution=wf,
-                            type=HistoryEventType.WORKFLOW_TIMED_OUT.value,
-                            pos=SPECIAL_EVENT_POS,
-                            details={'error': ErrorCode.WORKFLOW_TIMEOUT.value},
-                        )
-                        wf.status = WorkflowExecution.Status.TIMED_OUT
-                        wf.error = ErrorCode.WORKFLOW_TIMEOUT.value
-                        wf.finished_at = now
-                        wf.save(
-                            update_fields=[
-                                'status',
-                                'error',
-                                'finished_at',
-                                'updated_at',
-                            ]
-                        )
-                        qs = ActivityTask.objects.select_for_update().filter(
-                            execution=wf, status=ActivityTask.Status.QUEUED
-                        )
-                        for t in qs:
-                            t.status = ActivityTask.Status.FAILED
-                            t.error = ErrorCode.WORKFLOW_TIMEOUT.value
-                            t.finished_at = now
-                            t.save(
-                                update_fields=[
-                                    'status',
-                                    'error',
-                                    'finished_at',
-                                    'updated_at',
-                                ]
-                            )
-                            HistoryEvent.objects.create(
-                                execution=wf,
-                                type=HistoryEventType.ACTIVITY_FAILED.value,
-                                pos=t.pos,
-                                details={'error': ErrorCode.WORKFLOW_TIMEOUT.value},
-                            )
-                    except DatabaseError:
+                    except Exception:
                         continue
+                    deadline = (
+                        timezone.now() + _td(seconds=timeout)
+                        if timeout is not None
+                        else None
+                    )
+                    running.append(
+                        {
+                            'type': 'workflow',
+                            'id': wid,
+                            'proc': proc,
+                            'deadline': deadline,
+                        }
+                    )
 
                 loops += 1
-                if iterations is not None and loops >= iterations:
+                if iterations is not None and loops >= iterations and not running:
                     break
                 if not progressed:
                     time.sleep(tick)
@@ -443,6 +489,9 @@ class Command(BaseCommand):
         tick = opts['tick']
         batch = opts['batch']
         iterations = opts['iterations']
+        procs = opts['procs']
+        if procs < 1:
+            raise CommandError('--procs must be >= 1')
         hostname = socket.gethostname()
         self.stdout.write(self.style.SUCCESS(f'[durable] worker started on {hostname}'))
-        self._run_worker_loop(tick, batch, iterations)
+        self._run_worker_loop(tick, batch, iterations, procs)
