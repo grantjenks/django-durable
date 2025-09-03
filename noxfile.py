@@ -26,7 +26,13 @@ def format(session: nox.Session) -> None:
 @nox.session(venv_backend='uv')
 def tests(session: nox.Session) -> None:
     """Run the test suite."""
-    session.install('.[dev]')
+    django = session.env.get('DJANGO')
+    if django:
+        session.install(f'django=={django}')
+    else:
+        session.install('django')
+    session.install('pytest')
+    session.install('.', '--no-deps')
     session.run('python', 'manage.py', 'migrate', '--noinput')
     session.run('pytest')
 

@@ -4,8 +4,8 @@ from datetime import timedelta
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from django_durable.models import WorkflowExecution
 from django_durable import register
+from django_durable.models import WorkflowExecution
 
 
 class Command(BaseCommand):
