@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from .registry import register
 from .exceptions import (
     ActivityError,
     ActivityTimeout,
+    NondeterminismError,
     WorkflowException,
     WorkflowTimeout,
 )
@@ -93,12 +95,25 @@ class Context:
     def start_activity(self, name: str, *args, **kwargs) -> int:
         """Schedule an activity and return its handle."""
         pos = self._bump()
-        scheduled = HistoryEvent.objects.filter(
-            execution=self.execution,
-            pos=pos,
-            type=HistoryEventType.ACTIVITY_SCHEDULED.value,
-        ).exists()
-        if not scheduled:
+        ev = (
+            HistoryEvent.objects.filter(
+                execution=self.execution,
+                pos=pos,
+                type=HistoryEventType.ACTIVITY_SCHEDULED.value,
+            )
+            .order_by('id')
+            .last()
+        )
+        input_json = json.dumps({'args': args, 'kwargs': kwargs}, sort_keys=True)
+        if ev:
+            if (
+                ev.details.get('activity_name') != name
+                or ev.details.get('input') != input_json
+            ):
+                raise NondeterminismError(
+                    'Activity inputs do not match history'
+                )
+        else:
             with transaction.atomic():
                 timeout = kwargs.pop('schedule_to_close_timeout', None)
                 heartbeat = kwargs.pop('heartbeat_timeout', None)
@@ -119,8 +134,7 @@ class Context:
                     pos=pos,
                     details={
                         'activity_name': name,
-                        'args': args,
-                        'kwargs': kwargs,
+                        'input': input_json,
                         'timeout': timeout,
                         'heartbeat_timeout': heartbeat,
                         'retry_policy': policy_dict,
