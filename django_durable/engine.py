@@ -8,6 +8,7 @@ from typing import Any, Optional, Union
 from django.db import transaction
 from django.utils import timezone
 
+from .backoff import compute_backoff
 from .constants import (
     FINAL_EVENT_POS,
     SLEEP_ACTIVITY_NAME,
@@ -15,8 +16,6 @@ from .constants import (
     ErrorCode,
     HistoryEventType,
 )
-from .models import ActivityTask, HistoryEvent, WorkflowExecution
-from .registry import register
 from .exceptions import (
     ActivityError,
     ActivityTimeout,
@@ -24,6 +23,8 @@ from .exceptions import (
     WorkflowException,
     WorkflowTimeout,
 )
+from .models import ActivityTask, HistoryEvent, WorkflowExecution
+from .registry import register
 
 _current_activity = threading.local()
 
@@ -110,9 +111,7 @@ class Context:
                 ev.details.get('activity_name') != name
                 or ev.details.get('input') != input_json
             ):
-                raise NondeterminismError(
-                    'Activity inputs do not match history'
-                )
+                raise NondeterminismError('Activity inputs do not match history')
         else:
             with transaction.atomic():
                 timeout = kwargs.pop('schedule_to_close_timeout', None)
@@ -199,7 +198,7 @@ class Context:
         ).exists()
         if scheduled:
             raise NeedsPause()
-        raise RuntimeError(f"Unknown activity handle {handle}")
+        raise RuntimeError(f'Unknown activity handle {handle}')
 
     def run_activity(self, name: str, *args, **kwargs) -> Any:
         handle = self.start_activity(name, *args, **kwargs)
@@ -297,7 +296,9 @@ class Context:
                 )
         raise NeedsPause()
 
-    def start_workflow(self, name: str, timeout: Optional[float] = None, **input) -> str:
+    def start_workflow(
+        self, name: str, timeout: Optional[float] = None, **input
+    ) -> str:
         """Schedule a child workflow and return its handle."""
         pos = self._bump()
         scheduled = (
@@ -366,7 +367,7 @@ class Context:
         ).exists()
         if scheduled:
             raise NeedsPause()
-        raise RuntimeError(f"Unknown workflow handle {handle}")
+        raise RuntimeError(f'Unknown workflow handle {handle}')
 
     def run_workflow(self, name: str, timeout: Optional[float] = None, **input) -> Any:
         handle = self.start_workflow(name, timeout=timeout, **input)
@@ -546,13 +547,7 @@ def execute_activity(task: ActivityTask):
             max_attempts == 0 or task.attempt < max_attempts
         )
         if should_retry:
-            interval = policy.get('initial_interval', 1.0) * (
-                policy.get('backoff_coefficient', 2.0) ** (task.attempt - 1)
-            )
-            max_interval = policy.get('maximum_interval')
-            if max_interval is not None:
-                interval = min(interval, max_interval)
-
+            interval = compute_backoff(policy, task.attempt)
             task.status = ActivityTask.Status.QUEUED
             task.after_time = timezone.now() + timedelta(seconds=interval)
             task.save(update_fields=['status', 'error', 'after_time', 'updated_at'])

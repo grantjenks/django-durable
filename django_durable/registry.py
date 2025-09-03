@@ -56,10 +56,20 @@ register = Register()
 
 @dataclass
 class RetryPolicy:
+    """Controls retry behavior for activities.
+
+    Defaults mirror Temporal's backoff settings and are documented here for
+    clarity. ``strategy`` controls whether retries grow ``'exponential'`` or
+    ``'linear'`` and ``jitter`` adds +/- percentage randomness to the computed
+    delay.
+    """
+
     initial_interval: float = 1.0
     backoff_coefficient: float = 2.0
     maximum_interval: float = 60.0
     maximum_attempts: int = 0  # 0 for unlimited
+    jitter: float = 0.0
+    strategy: str = 'exponential'
     non_retryable_error_types: List[str] = field(default_factory=list)
 
     def asdict(self) -> Dict:

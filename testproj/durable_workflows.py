@@ -71,6 +71,12 @@ def retry_flow(ctx, key: str, fail_times: int):
 
 
 @register.workflow()
+def retry_linear_flow(ctx, key: str, fail_times: int):
+    res = ctx.run_activity("flaky_linear", key, fail_times)
+    return {"attempts": res["attempts"]}
+
+
+@register.workflow()
 def heartbeat_flow(ctx):
     res = ctx.run_activity("heartbeat_activity")
     return res

@@ -82,6 +82,9 @@ The registry provides decorators to declare workflows, activities, and queries. 
 - `register.activity(name: str | None = None, max_retries: int = 0, timeout: float | None = None, heartbeat_timeout: float | None = None, retry_policy: RetryPolicy | None = None)`
   - Registers an activity function that runs outside workflow replay. Must return JSON-serializable data.
   - Retries: either set `max_retries` or pass a `RetryPolicy` for backoff control.
+    Defaults: `initial_interval=1s`, `backoff_coefficient=2.0`,
+    `maximum_interval=60s`, `strategy='exponential'`, `jitter=0`.
+    Linear or exponential backoff with optional jitter is supported.
   - Timeouts: `timeout` sets schedule-to-close deadline; `heartbeat_timeout` enforces activity heartbeats.
   - Example:
     ```python

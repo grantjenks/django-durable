@@ -103,3 +103,18 @@ def test_retry_policy(tmp_path):
     status, result = read_workflow(exec_id)
     assert status == "COMPLETED"
     assert result == {"attempts": 3}
+
+
+def test_retry_policy_linear(tmp_path):
+    run_manage("flush", "--noinput")
+    out = run_manage(
+        "durable_start",
+        "retry_linear_flow",
+        "--input",
+        json.dumps({"key": "a", "fail_times": 2}),
+    )
+    exec_id = out.splitlines()[-1].strip()
+    run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "100")
+    status, result = read_workflow(exec_id)
+    assert status == "COMPLETED"
+    assert result == {"attempts": 3}
