@@ -14,6 +14,7 @@ django.setup()
 from django.core.management import call_command
 
 from django_durable import (
+    cancel_workflow,
     run_workflow,
     send_signal,
     start_workflow,
@@ -26,8 +27,8 @@ from django_durable.exceptions import (
     WorkflowException,
     WorkflowTimeout,
 )
-from django_durable.engine import Context
-from django_durable.models import WorkflowExecution, HistoryEvent
+from django_durable.engine import Context, step_workflow
+from django_durable.models import ActivityTask, WorkflowExecution, HistoryEvent
 from django_durable.constants import HistoryEventType, ErrorCode
 
 
@@ -150,4 +151,21 @@ def test_activity_input_mismatch_raises_nondeterminism():
     ctx_mismatch = Context(execution=wf)
     with pytest.raises(NondeterminismError):
         ctx_mismatch.start_activity("add", 1, b=3)
+
+
+def test_cancel_workflow_programmatically():
+    @register.workflow()
+    def cancel_flow(ctx):
+        ctx.run_activity("add", 1, 2)
+
+    handle = start_workflow("cancel_flow")
+    wf = WorkflowExecution.objects.get(pk=handle)
+    step_workflow(wf)
+
+    cancel_workflow(handle, reason="test")
+
+    wf.refresh_from_db()
+    assert wf.status == WorkflowExecution.Status.CANCELED
+    tasks = ActivityTask.objects.filter(execution=wf)
+    assert tasks and all(t.status == ActivityTask.Status.FAILED for t in tasks)
 

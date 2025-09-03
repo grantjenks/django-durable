@@ -4,6 +4,7 @@ from .engine import (
     _run_workflow,
     _start_workflow,
     _wait_workflow,
+    cancel_workflow,
     query_workflow,
     send_signal,
 )
@@ -15,6 +16,7 @@ __all__ = [
     "run_workflow",
     "send_signal",
     "query_workflow",
+    "cancel_workflow",
 ]
 
 def start_workflow(workflow_name: str, timeout: Optional[float] = None, **inputs) -> str:
