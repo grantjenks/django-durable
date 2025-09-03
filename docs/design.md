@@ -30,6 +30,7 @@ This document explains how and why Django Durable works the way it does.
   3) steps runnable workflows by spawning the `durable_internal_step_workflow` command in a subprocess.
 - Isolation: each activity or workflow step runs in its own process so the worker can terminate it if a timeout occurs.
 - Concurrency: run multiple worker processes across hosts; database locks prevent double execution.
+- The worker can manage multiple subprocesses at once; `--procs` controls the limit.
 - Scheduling: activities have `after_time` and optional `expires_at`; retries use exponential backoff from `RetryPolicy`.
 
 ## Transactions and Atomicity

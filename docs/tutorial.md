@@ -66,12 +66,13 @@ Notes:
 Start the worker process that executes workflows and activities out-of-band. You can run multiple workers in parallel.
 
 ```bash
-python manage.py durable_worker --batch 20 --tick 0.2
+python manage.py durable_worker --batch 20 --tick 0.2 --procs 4
 ```
 
 Flags:
 - `--batch`: max tasks per poll
 - `--tick`: poll interval in seconds
+- `--procs`: max subprocesses to manage concurrently
 
 ## 3) Start a Workflow
 
@@ -134,7 +135,7 @@ send_signal(exec_id, "go", {"clicked": True})
 
 1. Start a workflow that has a timer and multiple steps (like `onboard_user`).
 2. Kill the worker process in the middle of execution.
-3. Restart the worker: `python manage.py durable_worker`.
+3. Restart the worker: `python manage.py durable_worker --procs 4`.
 4. The workflow resumes from the next step. No work is lost; no step runs twice.
 
 ## 7) Wrap-up

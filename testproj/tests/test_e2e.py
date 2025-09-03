@@ -108,8 +108,8 @@ def test_cancel_marks_workflow_and_tasks(tmp_path):
     )
     exec_id = out.splitlines()[-1].strip()
 
-    # Run one iteration to schedule first activity but not execute it
-    run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "1")
+    # Step once to schedule first activity but not execute it
+    run_manage("durable_internal_step_workflow", exec_id)
 
     # Cancel
     run_manage("durable_cancel", exec_id, "--reason", "test")

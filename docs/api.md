@@ -156,9 +156,10 @@ def my_activity():
 
 ## Management Commands
 
-- `durable_worker [--tick FLOAT] [--batch INT] [--iterations INT]`
+- `durable_worker [--tick FLOAT] [--batch INT] [--iterations INT] [--procs INT]`
   - Runs the worker loop executing due activities and stepping runnable workflows.
   - `--iterations`: stop after N iterations (testing)
+  - `--procs`: maximum concurrent subprocesses (default 4)
 
 - `durable_start WORKFLOW_NAME [--input JSON] [--timeout FLOAT]`
   - Starts a workflow by name with optional JSON kwargs. Prints the execution UUID.
