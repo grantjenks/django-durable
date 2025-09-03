@@ -82,3 +82,7 @@ On this machine the benchmark completed **20** tasks and reported:
 
 These numbers provide a rough sense of system overhead; actual throughput will
 vary based on hardware and configuration.
+
+## License
+
+This project is licensed under the Apache License, Version 2.0. See the [LICENSE](LICENSE) file for details.

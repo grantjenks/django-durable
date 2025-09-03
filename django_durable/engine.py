@@ -15,8 +15,6 @@ from .constants import (
     ErrorCode,
     HistoryEventType,
 )
-from .models import ActivityTask, HistoryEvent, WorkflowExecution
-from .registry import register
 from .exceptions import (
     ActivityError,
     ActivityTimeout,
@@ -24,6 +22,8 @@ from .exceptions import (
     WorkflowException,
     WorkflowTimeout,
 )
+from .models import ActivityTask, HistoryEvent, WorkflowExecution
+from .registry import register
 
 _current_activity = threading.local()
 
