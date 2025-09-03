@@ -63,7 +63,7 @@ def test_activity_timeout_kills_process():
     run_manage("flush", "--noinput")
     out = run_manage(
         "durable_start",
-        "long_activity_flow",
+        "testproj.long_activity_flow",
         "--input",
         json.dumps({"loops": 1, "delay": 5.0}),
     )

@@ -70,7 +70,7 @@ def test_parent_waits_for_child(tmp_path):
     run_manage("flush", "--noinput")
     out = run_manage(
         "durable_start",
-        "parent_child_workflow",
+        "testproj.parent_child_workflow",
         "--input",
         json.dumps({"x": 2}),
     )

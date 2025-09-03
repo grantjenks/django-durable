@@ -64,7 +64,7 @@ def read_activity(exec_id):
 
 
 def test_activity_heartbeat_success(tmp_path):
-    out = run_manage("durable_start", "heartbeat_flow")
+    out = run_manage("durable_start", "testproj.heartbeat_flow")
     exec_id = out.splitlines()[-1].strip()
     run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "5")
     status, result = read_workflow(exec_id)
@@ -76,7 +76,7 @@ def test_activity_heartbeat_success(tmp_path):
 
 
 def test_activity_heartbeat_timeout(tmp_path):
-    out = run_manage("durable_start", "heartbeat_timeout_flow")
+    out = run_manage("durable_start", "testproj.heartbeat_timeout_flow")
     exec_id = out.splitlines()[-1].strip()
     # Step workflow once to enqueue the activity
     run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "1")

@@ -29,9 +29,9 @@ from django_durable.registry import register
 
 @register.workflow()
 def onboard_user(ctx, user_id: int):
-    ctx.run_activity("send_email", user_id)
+    ctx.run_activity("myapp.send_email", user_id)
     ctx.sleep(3600)  # timer; no worker thread is blocked
-    score = ctx.run_activity("compute_score", user_id)
+    score = ctx.run_activity("myapp.compute_score", user_id)
     return {"ok": True, "score": score["score"]}
 ```
 
@@ -40,7 +40,7 @@ Run the worker and start the workflow:
 ```bash
 python manage.py migrate
 python manage.py durable_worker --procs 4
-python manage.py durable_start onboard_user --input '{"user_id": 7}'
+python manage.py durable_start myapp.onboard_user --input '{"user_id": 7}'
 ```
 
 Monitor executions in Django admin. If the process crashes or restarts, the worker resumes from the next step.
@@ -49,7 +49,7 @@ Monitor executions in Django admin. If the process crashes or restarts, the work
 
 - Durable workflows: resume after crashes and restarts
 - First-class Django integration: ORM models, migrations, admin
-- Management commands: worker, start, signal, status, cancel
+- Management commands: worker, start, signal, cancel
 - Pure-Python: no external services required
 - Observable state: browse executions, events, and tasks in admin
 - Tested and documented

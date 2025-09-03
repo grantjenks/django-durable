@@ -69,7 +69,7 @@ def test_signal_flow_completes(tmp_path):
     # Start workflow
     out = run_manage(
         "durable_start",
-        "e2e_flow",
+        "testproj.e2e_flow",
         "--input",
         json.dumps({"value": 7}),
     )
@@ -102,7 +102,7 @@ def test_cancel_marks_workflow_and_tasks(tmp_path):
     # Start workflow
     out = run_manage(
         "durable_start",
-        "e2e_flow",
+        "testproj.e2e_flow",
         "--input",
         json.dumps({"value": 1}),
     )
@@ -126,7 +126,7 @@ def test_complex_flow_runs_end_to_end(tmp_path):
     # Start complex workflow
     out = run_manage(
         "durable_start",
-        "complex_flow",
+        "testproj.complex_flow",
         "--input",
         json.dumps({"value": 2}),
     )

@@ -10,26 +10,11 @@ Activity and workflow results must be JSON-serializable.
 # Commands
 
 ```bash
-python manage.py durable_start onboard_user --input '{"user_id": 7}'
+python manage.py durable_start myapp.onboard_user --input '{"user_id": 7}'
 ```
 
 ```bash
 python manage.py durable_worker --batch 20 --tick 0.2 --procs 4
-```
-
-## Queries
-
-- Inspect running workflow state via CLI:
-
-```bash
-python manage.py durable_status <execution_uuid>
-```
-
-- Programmatically:
-
-```python
-from django_durable import query_workflow
-info = query_workflow(execution_id, 'status')
 ```
 
 ## Signals

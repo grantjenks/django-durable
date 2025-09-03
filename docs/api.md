@@ -18,7 +18,7 @@ This reference lists the public surface exposed by `django_durable` and commonly
 
 ```python
 from django_durable import start_workflow
-exec_id = start_workflow("onboard_user", user_id=7)
+exec_id = start_workflow("myapp.onboard_user", user_id=7)
 ```
 
 ```{autofunction} django_durable.api.wait_workflow
@@ -67,20 +67,14 @@ from django_durable import cancel_workflow
 cancel_workflow(exec_id, reason="user requested")
 ```
 
-```{autofunction} django_durable.api.query_workflow
-```
-
-- Summary: Execute a registered read-only query against a workflow.
-- Params: `execution: Union[WorkflowExecution, str]`, `name: str`, `**payload`
-- Returns: query result (JSON-serializable)
-- Notes: Built-in `status` query returns `{id, workflow_name, status, result, error, pending_activities}`.
 
 ## Registry and Decorators
 
-The registry provides decorators to declare workflows, activities, and queries. Import from `django_durable.registry`.
+The registry provides decorators to declare workflows and activities. Import from `django_durable.registry`.
 
-- `register.workflow(name: str | None = None, timeout: float | None = None)`
+- `register.workflow(timeout: float | None = None)`
   - Registers a workflow function. The function signature is `fn(ctx, **inputs)` and must be deterministic relative to inputs and prior results.
+  - Registered names are automatically generated as `{app_name}.{func_name}` and stored on the function at `._durable_name`.
   - Optional `timeout` sets a deadline for the workflow; when exceeded, the workflow times out and children are canceled.
   - Example:
     ```python
@@ -88,20 +82,18 @@ The registry provides decorators to declare workflows, activities, and queries. 
 
     @register.workflow(timeout=3600)
     def add_flow(ctx, a: int, b: int):
-        res = ctx.run_activity("add", a, b)
+        res = ctx.run_activity("myapp.add", a, b)
         return {"value": res["value"]}
     ```
 
-- `register.activity(name: str | None = None, max_retries: int = 0, timeout: float | None = None, heartbeat_timeout: float | None = None, retry_policy: RetryPolicy | None = None)`
+- `register.activity(timeout: float | None = None, heartbeat_timeout: float | None = None, retry_policy: RetryPolicy | None = None)`
   - Registers an activity function that runs outside workflow replay. Must return JSON-serializable data.
-  - Retries: either set `max_retries` or pass a `RetryPolicy` for backoff control.
-    Defaults: `initial_interval=1s`, `backoff_coefficient=2.0`,
-    `maximum_interval=60s`, `strategy='exponential'`, `jitter=0`.
-    Linear or exponential backoff with optional jitter is supported.
+  - Retries: pass a `RetryPolicy` for backoff control. Defaults: `initial_interval=1s`, `backoff_coefficient=2.0`, `maximum_interval=60s`, `strategy='exponential'`, `jitter=0`.
   - Timeouts: `timeout` sets schedule-to-close deadline; `heartbeat_timeout` enforces activity heartbeats.
   - Example:
     ```python
-    from django_durable.registry import register, RetryPolicy
+    from django_durable.registry import register
+    from django_durable.retry import RetryPolicy
 
     @register.activity(
         retry_policy=RetryPolicy(initial_interval=0.1, maximum_attempts=3)
@@ -110,16 +102,7 @@ The registry provides decorators to declare workflows, activities, and queries. 
         ...
     ```
 
-- `register.query(workflow_name: str, name: str | None = None)`
-  - Registers a read-only query handler for a workflow. Handlers run inline without modifying state.
-  - Example:
-    ```python
-    @register.query("e2e_flow")
-    def history(execution):
-        return {"events": execution.history.count()}
-    ```
-
-```{autoclass} django_durable.registry.RetryPolicy
+```{autoclass} django_durable.retry.RetryPolicy
 :members:
 ```
 
@@ -166,9 +149,6 @@ def my_activity():
 
 - `durable_signal EXECUTION_ID SIGNAL_NAME [--input JSON]`
   - Sends a signal to a workflow with an optional JSON payload.
-
-- `durable_status EXECUTION_ID [--query NAME] [--input JSON]`
-  - Executes a read-only query for the execution (defaults to `status`). Prints JSON.
 
 - `durable_cancel EXECUTION_ID [--reason STR] [--keep-queued]`
   - Cancels the workflow. By default, queued activities are failed to prevent execution.
