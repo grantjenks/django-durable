@@ -40,6 +40,13 @@ def docs(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend='uv')
+def bench(session: nox.Session) -> None:
+    """Run the benchmark."""
+    session.install('.')
+    session.run('python', 'testproj/benchmark.py', *session.posargs)
+
+
+@nox.session(venv_backend='uv')
 def upload(session: nox.Session) -> None:
     """Upload built docs to public/docs/django-durable/ via rsync.
 

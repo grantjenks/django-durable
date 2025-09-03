@@ -67,18 +67,20 @@ Cancellation moves the workflow to CANCELED and, by default, marks queued activi
 
 ## Benchmark
 
-The repository includes a lightweight benchmark script that measures the
-throughput of the simple `add` activity and the `add_flow` workflow while ten
-worker processes run in parallel:
+Run the repeatable benchmark via Nox. It supports configurable concurrency,
+payload sizes and database backends. For example, to run 20 workflows with ten
+workers on SQLite:
 
 ```bash
-python testproj/benchmark.py --tasks 20
+nox -s bench -- --tasks 20 --concurrency 10 --payload-size 0 --backend sqlite
 ```
 
-On this machine the benchmark completed **20** tasks and reported:
+Sample output:
 
-- Activities per second: 3.65
-- Workflows per second: 4.92
+```
+backend  conc payload  p50(ms)  p95(ms)  throughput
+sqlite     10       0    200.0    210.0        4.92
+```
 
 These numbers provide a rough sense of system overhead; actual throughput will
 vary based on hardware and configuration.
