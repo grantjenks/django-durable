@@ -22,6 +22,14 @@ class ActivityTimeout(ActivityException):
     """Occurs when an activity times out."""
 
 
+class UnknownActivityError(ActivityException):
+    """Occurs when the activity name is not registered."""
+
+    def __init__(self, name: str):
+        self.name = name
+        super().__init__(f"Unknown activity {name}")
+
+
 class ActivityError(ActivityException):
     """Wraps an error that propagates from an activity."""
 

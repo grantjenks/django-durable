@@ -22,6 +22,7 @@ from .exceptions import (
     NondeterminismError,
     WorkflowException,
     WorkflowTimeout,
+    UnknownActivityError,
 )
 from .models import ActivityTask, HistoryEvent, WorkflowExecution
 from .registry import register
@@ -513,7 +514,7 @@ def execute_activity(task: ActivityTask):
             result = {'slept': seconds}
         else:
             if fn is None:
-                raise RuntimeError(f'Unknown activity {task.activity_name}')
+                raise UnknownActivityError(task.activity_name)
             result = fn(*task.args, **task.kwargs)
 
         task.status = ActivityTask.Status.COMPLETED
@@ -546,6 +547,8 @@ def execute_activity(task: ActivityTask):
         should_retry = error_type not in non_retry and (
             max_attempts == 0 or task.attempt < max_attempts
         )
+        if isinstance(e, UnknownActivityError):
+            should_retry = False
         if should_retry:
             interval = compute_backoff(policy, task.attempt)
             task.status = ActivityTask.Status.QUEUED
