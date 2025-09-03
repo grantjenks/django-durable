@@ -28,7 +28,7 @@ python manage.py durable_status <execution_uuid>
 - Programmatically:
 
 ```python
-from django_durable.engine import query_workflow
+from django_durable import query_workflow
 info = query_workflow(execution_id, 'status')
 ```
 
@@ -44,7 +44,7 @@ python manage.py durable_signal <execution_uuid> user_clicked --input '{"clicked
 You can also send a signal programmatically:
 
 ```python
-from django_durable.engine import send_signal
+from django_durable import send_signal
 send_signal(execution_id, "user_clicked", {"clicked": True})
 ```
 
@@ -59,7 +59,7 @@ python manage.py durable_cancel <execution_uuid> --reason "user requested" [--ke
 - In code:
 
 ```python
-from django_durable.engine import cancel_workflow
+from django_durable import cancel_workflow
 cancel_workflow(execution_id, reason="user requested")
 ```
 

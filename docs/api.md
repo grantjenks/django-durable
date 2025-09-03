@@ -54,6 +54,19 @@ from django_durable import send_signal
 send_signal(exec_id, "go", {"clicked": True})
 ```
 
+```{autofunction} django_durable.api.cancel_workflow
+```
+
+- Summary: Cancel a workflow execution and optionally fail queued activities.
+- Params: `execution: Union[WorkflowExecution, str]`, `reason: str | None = None`, `cancel_queued_activities: bool = True`
+- Returns: `None`
+- Example:
+
+```python
+from django_durable import cancel_workflow
+cancel_workflow(exec_id, reason="user requested")
+```
+
 ```{autofunction} django_durable.api.query_workflow
 ```
 

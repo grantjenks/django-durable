@@ -4,6 +4,7 @@ __all__ = [
     "run_workflow",
     "send_signal",
     "query_workflow",
+    "cancel_workflow",
 ]
 
 

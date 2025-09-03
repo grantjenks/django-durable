@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand, CommandError
 
-from django_durable.engine import cancel_workflow
+from django_durable import cancel_workflow
 from django_durable.models import WorkflowExecution
 
 
