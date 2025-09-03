@@ -23,6 +23,7 @@ from .exceptions import (
     NondeterminismError,
     WorkflowException,
     WorkflowTimeout,
+    UnknownActivityError,
 )
 
 _current_activity = threading.local()
@@ -512,7 +513,7 @@ def execute_activity(task: ActivityTask):
             result = {'slept': seconds}
         else:
             if fn is None:
-                raise RuntimeError(f'Unknown activity {task.activity_name}')
+                raise UnknownActivityError(task.activity_name)
             result = fn(*task.args, **task.kwargs)
 
         task.status = ActivityTask.Status.COMPLETED
@@ -545,6 +546,8 @@ def execute_activity(task: ActivityTask):
         should_retry = error_type not in non_retry and (
             max_attempts == 0 or task.attempt < max_attempts
         )
+        if isinstance(e, UnknownActivityError):
+            should_retry = False
         if should_retry:
             interval = policy.get('initial_interval', 1.0) * (
                 policy.get('backoff_coefficient', 2.0) ** (task.attempt - 1)
