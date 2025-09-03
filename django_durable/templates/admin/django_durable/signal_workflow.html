@@ -1,0 +1,15 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>Signal workflows</h1>
+  <form method="post">{% csrf_token %}
+    {{ form.as_p }}
+    {% for obj in queryset %}
+      <input type="hidden" name="{{ action_checkbox_name }}" value="{{ obj.pk }}">
+    {% endfor %}
+    <input type="hidden" name="action" value="{{ action }}">
+    <input type="hidden" name="select_across" value="0">
+    <input type="submit" name="apply" value="Send">
+  </form>
+{% endblock %}
+
