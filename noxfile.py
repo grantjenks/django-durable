@@ -47,6 +47,18 @@ def bench(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend='uv')
+def stress(session: nox.Session) -> None:
+    """Run the stress test harness."""
+    session.install('.[dev]')
+    db = Path('db.sqlite3')
+    if db.exists():
+        db.unlink()
+    session.run('python', 'manage.py', 'migrate', '--noinput')
+    duration = session.posargs[0] if session.posargs else '10'
+    session.run('python', 'testproj/stress.py', '--seconds', duration)
+
+
+@nox.session(venv_backend='uv')
 def upload(session: nox.Session) -> None:
     """Upload built docs to public/docs/django-durable/ via rsync.
 
