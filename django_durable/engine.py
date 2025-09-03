@@ -20,9 +20,9 @@ from .exceptions import (
     ActivityError,
     ActivityTimeout,
     NondeterminismError,
+    UnknownActivityError,
     WorkflowException,
     WorkflowTimeout,
-    UnknownActivityError,
 )
 from .models import ActivityTask, HistoryEvent, WorkflowExecution
 from .registry import register
