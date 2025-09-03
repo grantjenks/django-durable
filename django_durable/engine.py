@@ -8,7 +8,6 @@ from typing import Any, Optional, Union
 from django.db import transaction
 from django.utils import timezone
 
-from .retry import compute_backoff
 from .constants import (
     FINAL_EVENT_POS,
     SLEEP_ACTIVITY_NAME,
@@ -26,6 +25,7 @@ from .exceptions import (
 )
 from .models import ActivityTask, HistoryEvent, WorkflowExecution
 from .registry import register
+from .retry import compute_backoff
 
 _current_activity = threading.local()
 

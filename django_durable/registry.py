@@ -1,7 +1,7 @@
+import sys
+from pathlib import Path
 from typing import Callable, Dict, Optional
 
-from pathlib import Path
-import sys
 from django.apps import apps
 
 from .retry import RetryPolicy

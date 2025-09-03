@@ -9,9 +9,9 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import DatabaseError, close_old_connections
 from django.utils import timezone
 
-from django_durable.retry import compute_backoff
 from django_durable.constants import SPECIAL_EVENT_POS, ErrorCode, HistoryEventType
 from django_durable.models import ActivityTask, HistoryEvent, WorkflowExecution
+from django_durable.retry import compute_backoff
 
 
 class Command(BaseCommand):
