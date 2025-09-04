@@ -10,6 +10,7 @@ from django.db import DatabaseError, close_old_connections
 from django.utils import timezone
 
 from django_durable.constants import SPECIAL_EVENT_POS, ErrorCode, HistoryEventType
+from django_durable.engine import _notify_parent
 from django_durable.models import ActivityTask, HistoryEvent, WorkflowExecution
 from django_durable.retry import compute_backoff
 
@@ -97,6 +98,11 @@ class Command(BaseCommand):
                 pos=t.pos,
                 details={'error': ErrorCode.WORKFLOW_TIMEOUT.value},
             )
+        _notify_parent(
+            wf,
+            HistoryEventType.CHILD_WORKFLOW_TIMED_OUT.value,
+            {'error': ErrorCode.WORKFLOW_TIMEOUT.value},
+        )
 
     def _run_worker_loop(self, tick, batch, iterations, procs):
         close_old_connections()
@@ -201,39 +207,7 @@ class Command(BaseCommand):
                         wf = WorkflowExecution.objects.get(id=wid)
                     except WorkflowExecution.DoesNotExist:
                         continue
-                    HistoryEvent.objects.create(
-                        execution=wf,
-                        type=HistoryEventType.WORKFLOW_TIMED_OUT.value,
-                        pos=SPECIAL_EVENT_POS,
-                        details={'error': ErrorCode.WORKFLOW_TIMEOUT.value},
-                    )
-                    wf.status = WorkflowExecution.Status.TIMED_OUT
-                    wf.error = ErrorCode.WORKFLOW_TIMEOUT.value
-                    wf.finished_at = now
-                    wf.save(
-                        update_fields=['status', 'error', 'finished_at', 'updated_at']
-                    )
-                    qs = ActivityTask.objects.select_for_update().filter(
-                        execution=wf, status=ActivityTask.Status.QUEUED
-                    )
-                    for t in qs:
-                        t.status = ActivityTask.Status.FAILED
-                        t.error = ErrorCode.WORKFLOW_TIMEOUT.value
-                        t.finished_at = now
-                        t.save(
-                            update_fields=[
-                                'status',
-                                'error',
-                                'finished_at',
-                                'updated_at',
-                            ]
-                        )
-                        HistoryEvent.objects.create(
-                            execution=wf,
-                            type=HistoryEventType.ACTIVITY_FAILED.value,
-                            pos=t.pos,
-                            details={'error': ErrorCode.WORKFLOW_TIMEOUT.value},
-                        )
+                    self._timeout_workflow(wf)
 
                 # 0c) Heartbeat timeouts for running activities
                 hb_ids = list(
