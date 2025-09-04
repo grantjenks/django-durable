@@ -10,6 +10,10 @@ class WorkflowTimeout(WorkflowException):
     """Occurs when a workflow times out."""
 
 
+class WaitWorkflowTimeout(WorkflowException):
+    """Occurs when waiting for a workflow times out."""
+
+
 class NondeterminismError(WorkflowException):
     """Event history does not line up during step/replay of a workflow."""
 
@@ -28,6 +32,10 @@ class ActivityException(DurableException):
 
 class ActivityTimeout(ActivityException):
     """Occurs when an activity times out."""
+
+
+class WaitActivityTimeout(ActivityException):
+    """Occurs when waiting for an activity times out."""
 
 
 class UnknownActivityError(ActivityException):

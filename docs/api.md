@@ -115,12 +115,12 @@ Each workflow function receives `ctx`, which exposes deterministic APIs used dur
 
 - `ctx.run_activity(name_or_fn, *args, **kwargs) -> Any`: schedule and wait for an activity; returns its result.
 - `ctx.start_activity(name_or_fn, *args, **kwargs) -> int`: schedule an activity and return a handle.
-- `ctx.wait_activity(handle: int) -> Any`: wait for a previously started activity.
+- `ctx.wait_activity(handle: int, timeout: float | None = None) -> Any`: wait for a previously started activity.
 - `ctx.sleep(seconds: float)`: durable timer; never blocks a worker thread.
 - `ctx.wait_signal(name: str) -> Any`: wait for an external signal and resume with its payload.
 - `ctx.run_workflow(name_or_fn: str | Callable, **inputs) -> Any`: start and wait for a child workflow.
 - `ctx.start_workflow(name_or_fn: str | Callable, **inputs) -> str`: start a child workflow; returns its handle.
-- `ctx.wait_workflow(handle: str) -> Any`: wait for a child workflow by handle.
+- `ctx.wait_workflow(handle: str, timeout: float | None = None) -> Any`: wait for a child workflow by handle.
 - Versioning helpers:
   - `ctx.get_version(change_id: str, version: int) -> int`
   - `ctx.patched(change_id: str) -> bool`
@@ -165,6 +165,6 @@ def my_activity():
 ## Errors and Exceptions
 
 - `start_workflow`: raises `UnknownWorkflowError` if the named workflow is not registered.
-- `wait_workflow`/`run_workflow`: raise `RuntimeError` if the workflow ends in FAILED/TIMED_OUT/CANCELED; message contains the error code or text.
+- `wait_workflow`/`run_workflow`: raise `WorkflowException` if the workflow ends in FAILED/CANCELED, `WorkflowTimeout` if it times out, and `WaitWorkflowTimeout` if waiting exceeds the supplied timeout.
 - Activities with retries/timeouts propagate failure info to the workflow via history events.
 

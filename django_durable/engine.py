@@ -23,6 +23,8 @@ from .exceptions import (
     UnknownWorkflowError,
     WorkflowException,
     WorkflowTimeout,
+    WaitActivityTimeout,
+    WaitWorkflowTimeout,
 )
 from .models import ActivityTask, HistoryEvent, WorkflowExecution
 from .registry import register
@@ -168,43 +170,53 @@ class Context:
                 )
         return pos
 
-    def wait_activity(self, handle: int) -> Any:
+    def wait_activity(self, handle: int, timeout: float | None = None) -> Any:
         """Wait for a previously started activity and return its result."""
         pos = handle
-        ev_done = (
-            HistoryEvent.objects.filter(
+        deadline = None
+        if timeout is not None:
+            deadline = timezone.now() + timedelta(seconds=float(timeout))
+        while True:
+            ev_done = (
+                HistoryEvent.objects.filter(
+                    execution=self.execution,
+                    pos=pos,
+                    type__in=(
+                        HistoryEventType.ACTIVITY_COMPLETED.value,
+                        HistoryEventType.ACTIVITY_FAILED.value,
+                        HistoryEventType.ACTIVITY_TIMED_OUT.value,
+                        HistoryEventType.ACTIVITY_CANCELED.value,
+                    ),
+                )
+                .order_by('id')
+                .last()
+            )
+            if ev_done:
+                if ev_done.type == HistoryEventType.ACTIVITY_FAILED.value:
+                    err = ev_done.details.get('error', ErrorCode.ACTIVITY_FAILED.value)
+                    raise ActivityError(RuntimeError(err))
+                if ev_done.type == HistoryEventType.ACTIVITY_TIMED_OUT.value:
+                    err = ev_done.details.get('error', ErrorCode.ACTIVITY_TIMEOUT.value)
+                    raise ActivityTimeout(err)
+                if ev_done.type == HistoryEventType.ACTIVITY_CANCELED.value:
+                    err = ev_done.details.get('error', ErrorCode.WORKFLOW_CANCELED.value)
+                    raise ActivityError(RuntimeError(err))
+                return ev_done.details.get('result')
+
+            scheduled = HistoryEvent.objects.filter(
                 execution=self.execution,
                 pos=pos,
-                type__in=(
-                    HistoryEventType.ACTIVITY_COMPLETED.value,
-                    HistoryEventType.ACTIVITY_FAILED.value,
-                    HistoryEventType.ACTIVITY_TIMED_OUT.value,
-                    HistoryEventType.ACTIVITY_CANCELED.value,
-                ),
-            )
-            .order_by('id')
-            .last()
-        )
-        if ev_done:
-            if ev_done.type == HistoryEventType.ACTIVITY_FAILED.value:
-                err = ev_done.details.get('error', ErrorCode.ACTIVITY_FAILED.value)
-                raise ActivityError(RuntimeError(err))
-            if ev_done.type == HistoryEventType.ACTIVITY_TIMED_OUT.value:
-                err = ev_done.details.get('error', ErrorCode.ACTIVITY_TIMEOUT.value)
-                raise ActivityTimeout(err)
-            if ev_done.type == HistoryEventType.ACTIVITY_CANCELED.value:
-                err = ev_done.details.get('error', ErrorCode.WORKFLOW_CANCELED.value)
-                raise ActivityError(RuntimeError(err))
-            return ev_done.details.get('result')
+                type=HistoryEventType.ACTIVITY_SCHEDULED.value,
+            ).exists()
+            if scheduled and timeout is None:
+                raise NeedsPause()
+            if not scheduled:
+                raise RuntimeError(f'Unknown activity handle {handle}')
 
-        scheduled = HistoryEvent.objects.filter(
-            execution=self.execution,
-            pos=pos,
-            type=HistoryEventType.ACTIVITY_SCHEDULED.value,
-        ).exists()
-        if scheduled:
-            raise NeedsPause()
-        raise RuntimeError(f'Unknown activity handle {handle}')
+            if timeout == 0 or (deadline and timezone.now() >= deadline):
+                raise WaitActivityTimeout()
+
+            time.sleep(1)
 
     def cancel_activity(self, handle: int, reason: str | None = None):
         """Cancel a previously scheduled activity if still queued."""
@@ -413,43 +425,53 @@ class Context:
             )
         return str(child.id)
 
-    def wait_workflow(self, handle: str) -> Any:
+    def wait_workflow(self, handle: str, timeout: float | None = None) -> Any:
         """Wait for a previously started child workflow."""
-        ev_done = (
-            HistoryEvent.objects.filter(
-                execution=self.execution,
-                type__in=[
-                    HistoryEventType.CHILD_WORKFLOW_COMPLETED.value,
-                    HistoryEventType.CHILD_WORKFLOW_FAILED.value,
-                    HistoryEventType.CHILD_WORKFLOW_CANCELED.value,
-                    HistoryEventType.CHILD_WORKFLOW_TIMED_OUT.value,
-                ],
-                details__child_id=handle,
+        deadline = None
+        if timeout is not None:
+            deadline = timezone.now() + timedelta(seconds=float(timeout))
+        while True:
+            ev_done = (
+                HistoryEvent.objects.filter(
+                    execution=self.execution,
+                    type__in=[
+                        HistoryEventType.CHILD_WORKFLOW_COMPLETED.value,
+                        HistoryEventType.CHILD_WORKFLOW_FAILED.value,
+                        HistoryEventType.CHILD_WORKFLOW_CANCELED.value,
+                        HistoryEventType.CHILD_WORKFLOW_TIMED_OUT.value,
+                    ],
+                    details__child_id=handle,
+                )
+                .order_by('id')
+                .last()
             )
-            .order_by('id')
-            .last()
-        )
-        if ev_done:
-            if ev_done.type == HistoryEventType.CHILD_WORKFLOW_FAILED.value:
-                err = ev_done.details.get('error', ErrorCode.ACTIVITY_FAILED.value)
-                if err == ErrorCode.WORKFLOW_TIMEOUT.value:
+            if ev_done:
+                if ev_done.type == HistoryEventType.CHILD_WORKFLOW_FAILED.value:
+                    err = ev_done.details.get('error', ErrorCode.ACTIVITY_FAILED.value)
+                    if err == ErrorCode.WORKFLOW_TIMEOUT.value:
+                        raise WorkflowTimeout(err)
+                    raise WorkflowException(err)
+                if ev_done.type == HistoryEventType.CHILD_WORKFLOW_CANCELED.value:
+                    err = ev_done.details.get('error', ErrorCode.WORKFLOW_CANCELED.value)
+                    raise WorkflowException(err)
+                if ev_done.type == HistoryEventType.CHILD_WORKFLOW_TIMED_OUT.value:
+                    err = ev_done.details.get('error', ErrorCode.WORKFLOW_TIMEOUT.value)
                     raise WorkflowTimeout(err)
-                raise WorkflowException(err)
-            if ev_done.type == HistoryEventType.CHILD_WORKFLOW_CANCELED.value:
-                err = ev_done.details.get('error', ErrorCode.WORKFLOW_CANCELED.value)
-                raise WorkflowException(err)
-            if ev_done.type == HistoryEventType.CHILD_WORKFLOW_TIMED_OUT.value:
-                err = ev_done.details.get('error', ErrorCode.WORKFLOW_TIMEOUT.value)
-                raise WorkflowTimeout(err)
-            return ev_done.details.get('result')
-        scheduled = HistoryEvent.objects.filter(
-            execution=self.execution,
-            type=HistoryEventType.CHILD_WORKFLOW_SCHEDULED.value,
-            details__child_id=handle,
-        ).exists()
-        if scheduled:
-            raise NeedsPause()
-        raise RuntimeError(f'Unknown workflow handle {handle}')
+                return ev_done.details.get('result')
+            scheduled = HistoryEvent.objects.filter(
+                execution=self.execution,
+                type=HistoryEventType.CHILD_WORKFLOW_SCHEDULED.value,
+                details__child_id=handle,
+            ).exists()
+            if scheduled and timeout is None:
+                raise NeedsPause()
+            if not scheduled:
+                raise RuntimeError(f'Unknown workflow handle {handle}')
+
+            if timeout == 0 or (deadline and timezone.now() >= deadline):
+                raise WaitWorkflowTimeout()
+
+            time.sleep(1)
 
     def run_workflow(self, name: str | Callable, timeout: float | None = None, **input) -> Any:
         handle = self.start_workflow(name, timeout=timeout, **input)
