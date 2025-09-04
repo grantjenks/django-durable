@@ -65,7 +65,7 @@ def read_activity_statuses(exec_id):
 
 def test_activity_timeout(tmp_path):
     run_manage("flush", "--noinput")
-    out = run_manage("durable_start", "testproj.activity_timeout_flow")
+    out = run_manage("durable_start", "testproj.durable_workflows.activity_timeout_flow")
     exec_id = out.splitlines()[-1].strip()
     run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "5")
     status, _ = read_workflow(exec_id)
@@ -77,7 +77,7 @@ def test_activity_timeout(tmp_path):
 def test_workflow_timeout(tmp_path):
     out = run_manage(
         "durable_start",
-        "testproj.sleep_work_loop",
+        "testproj.durable_workflows.sleep_work_loop",
         "--input",
         json.dumps({"loops": 1, "sleep": 1}),
         "--timeout",
@@ -94,7 +94,7 @@ def test_retry_policy(tmp_path):
     run_manage("flush", "--noinput")
     out = run_manage(
         "durable_start",
-        "testproj.retry_flow",
+        "testproj.durable_workflows.retry_flow",
         "--input",
         json.dumps({"key": "a", "fail_times": 2}),
     )
@@ -117,7 +117,7 @@ def test_retry_policy_linear(tmp_path):
     run_manage("flush", "--noinput")
     out = run_manage(
         "durable_start",
-        "testproj.retry_linear_flow",
+        "testproj.durable_workflows.retry_linear_flow",
         "--input",
         json.dumps({"key": "a", "fail_times": 2}),
     )

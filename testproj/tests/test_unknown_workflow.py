@@ -27,4 +27,4 @@ def flush_db():
 
 def test_start_unknown_workflow_raises():
     with pytest.raises(UnknownWorkflowError):
-        start_workflow("testproj.missing_flow")
+        start_workflow("testproj.durable_workflows.missing_flow")

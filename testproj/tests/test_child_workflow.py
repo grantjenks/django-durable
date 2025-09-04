@@ -86,7 +86,7 @@ def test_parent_waits_for_child(tmp_path):
     run_manage("flush", "--noinput")
     out = run_manage(
         "durable_start",
-        "testproj.parent_child_workflow",
+        "testproj.durable_workflows.parent_child_workflow",
         "--input",
         json.dumps({"x": 2}),
     )
@@ -105,7 +105,7 @@ def test_parent_waits_for_child(tmp_path):
 
 def test_cancel_cascades_to_children(tmp_path):
     run_manage("flush", "--noinput")
-    out = run_manage("durable_start", "testproj.parent_cascade_workflow")
+    out = run_manage("durable_start", "testproj.durable_workflows.parent_cascade_workflow")
     parent_id = out.splitlines()[-1].strip()
 
     # allow child and grandchild to start

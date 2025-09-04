@@ -3,7 +3,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import Any, Callable
 
 from django.db import transaction
 from django.utils import timezone
@@ -95,8 +95,10 @@ class Context:
 
         self.get_version(f'patch:{change_id}', 1)
 
-    def start_activity(self, name: str, *args, **kwargs) -> int:
+    def start_activity(self, name: str | Callable, *args, **kwargs) -> int:
         """Schedule an activity and return its handle."""
+        if not isinstance(name, str):
+            name = getattr(name, "_durable_name")
         pos = self._bump()
         ev = (
             HistoryEvent.objects.filter(
@@ -268,7 +270,7 @@ class Context:
                 details=details,
             )
 
-    def run_activity(self, name: str, *args, **kwargs) -> Any:
+    def run_activity(self, name: str | Callable, *args, **kwargs) -> Any:
         handle = self.start_activity(name, *args, **kwargs)
         return self.wait_activity(handle)
 
@@ -365,9 +367,11 @@ class Context:
         raise NeedsPause()
 
     def start_workflow(
-        self, name: str, timeout: float | None = None, **input
+        self, name: str | Callable, timeout: float | None = None, **input
     ) -> str:
         """Schedule a child workflow and return its handle."""
+        if not isinstance(name, str):
+            name = getattr(name, "_durable_name")
         pos = self._bump()
         scheduled = (
             HistoryEvent.objects.filter(
@@ -447,7 +451,7 @@ class Context:
             raise NeedsPause()
         raise RuntimeError(f'Unknown workflow handle {handle}')
 
-    def run_workflow(self, name: str, timeout: float | None = None, **input) -> Any:
+    def run_workflow(self, name: str | Callable, timeout: float | None = None, **input) -> Any:
         handle = self.start_workflow(name, timeout=timeout, **input)
         return self.wait_workflow(handle)
 
@@ -784,9 +788,12 @@ def signal_workflow(
 
 
 def _start_workflow(
-    workflow_name: str, timeout: float | None = None, **inputs
+    workflow: str | Callable, timeout: float | None = None, **inputs
 ) -> str:
     """Create a workflow execution and return its handle (ID)."""
+    workflow_name = (
+        workflow if isinstance(workflow, str) else getattr(workflow, "_durable_name")
+    )
     fn = register.workflows.get(workflow_name)
     if fn is None:
         raise UnknownWorkflowError(workflow_name)
@@ -863,7 +870,7 @@ def _wait_workflow(execution: WorkflowExecution | str) -> Any:
     return _run_loop(execution)
 
 
-def _run_workflow(workflow_name: str, timeout: float | None = None, **inputs) -> Any:
+def _run_workflow(workflow: str | Callable, timeout: float | None = None, **inputs) -> Any:
     """Convenience helper: start a workflow and wait for its result."""
-    exec_id = _start_workflow(workflow_name, timeout=timeout, **inputs)
+    exec_id = _start_workflow(workflow, timeout=timeout, **inputs)
     return _wait_workflow(exec_id)

@@ -25,4 +25,4 @@ def test_warns_on_nondeterministic_code():
         e.id == "django_durable.W001" and "random" in e.msg for e in errors
     )
 
-    register.workflows.pop("testproj.random_wf", None)
+    register.workflows.pop(random_wf._durable_name, None)

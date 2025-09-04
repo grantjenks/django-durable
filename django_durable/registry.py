@@ -1,8 +1,4 @@
-import sys
 from collections.abc import Callable
-from pathlib import Path
-
-from django.apps import apps
 
 from .retry import RetryPolicy
 
@@ -13,18 +9,7 @@ class Register:
         self.activities: dict[str, Callable] = {}
 
     def _durable_name(self, fn: Callable) -> str:
-        module = sys.modules.get(fn.__module__)
-        file = getattr(module, "__file__", None)
-        app_name = None
-        if file:
-            mod_path = Path(file).resolve()
-            for cfg in apps.get_app_configs():
-                if mod_path.is_relative_to(Path(cfg.path).resolve()):
-                    app_name = cfg.label
-                    break
-        if app_name is None:
-            app_name = fn.__module__.split('.')[0]
-        return f"{app_name}.{fn.__name__}"
+        return f"{fn.__module__}.{fn.__name__}"
 
     def workflow(self, timeout: float | None = None):
         def deco(fn):

@@ -11,15 +11,17 @@ This reference lists the public surface exposed by `django_durable` and commonly
 ```{autofunction} django_durable.api.start_workflow
 ```
 
-- Summary: Create a workflow execution and return its handle (UUID string).
-- Params: `workflow_name: str`, `timeout: float | None = None`, `**inputs`
-- Returns: `str` execution ID
-- Example:
+ - Summary: Create a workflow execution and return its handle (UUID string).
+ - Params: `workflow: str | Callable`, `timeout: float | None = None`, `**inputs`
+ - Returns: `str` execution ID
+ - Example:
 
-```python
-from django_durable import start_workflow
-exec_id = start_workflow("myapp.onboard_user", user_id=7)
-```
+ ```python
+ from django_durable import start_workflow
+ from myapp.workflows import onboard_user
+
+ exec_id = start_workflow(onboard_user, user_id=7)
+ ```
 
 ```{autofunction} django_durable.api.wait_workflow
 ```
@@ -38,7 +40,7 @@ result = wait_workflow(exec_id)
 ```
 
 - Summary: Convenience helper: start a workflow and wait for its result.
-- Params: `workflow_name: str`, `timeout: float | None = None`, `**inputs`
+- Params: `workflow: str | Callable`, `timeout: float | None = None`, `**inputs`
 - Returns: JSON-serializable result
 
 ```{autofunction} django_durable.api.signal_workflow
@@ -74,15 +76,16 @@ The registry provides decorators to declare workflows and activities. Import fro
 
 - `register.workflow(timeout: float | None = None)`
   - Registers a workflow function. The function signature is `fn(ctx, **inputs)` and must be deterministic relative to inputs and prior results.
-  - Registered names are automatically generated as `{app_name}.{func_name}` and stored on the function at `._durable_name`.
+  - Registered names are automatically generated as `{module}.{func_name}` and stored on the function at `._durable_name`.
   - Optional `timeout` sets a deadline for the workflow; when exceeded, the workflow times out and children are canceled.
   - Example:
     ```python
     from django_durable import register
+    from myapp.activities import add
 
     @register.workflow(timeout=3600)
     def add_flow(ctx, a: int, b: int):
-        res = ctx.run_activity("myapp.add", a, b)
+        res = ctx.run_activity(add, a, b)
         return {"value": res["value"]}
     ```
 
@@ -110,13 +113,13 @@ The registry provides decorators to declare workflows and activities. Import fro
 
 Each workflow function receives `ctx`, which exposes deterministic APIs used during replay. Key methods:
 
-- `ctx.run_activity(name, *args, **kwargs) -> Any`: schedule and wait for an activity; returns its result.
-- `ctx.start_activity(name, *args, **kwargs) -> int`: schedule an activity and return a handle.
+- `ctx.run_activity(name_or_fn, *args, **kwargs) -> Any`: schedule and wait for an activity; returns its result.
+- `ctx.start_activity(name_or_fn, *args, **kwargs) -> int`: schedule an activity and return a handle.
 - `ctx.wait_activity(handle: int) -> Any`: wait for a previously started activity.
 - `ctx.sleep(seconds: float)`: durable timer; never blocks a worker thread.
 - `ctx.wait_signal(name: str) -> Any`: wait for an external signal and resume with its payload.
-- `ctx.run_workflow(name: str, **inputs) -> Any`: start and wait for a child workflow.
-- `ctx.start_workflow(name: str, **inputs) -> str`: start a child workflow; returns its handle.
+- `ctx.run_workflow(name_or_fn: str | Callable, **inputs) -> Any`: start and wait for a child workflow.
+- `ctx.start_workflow(name_or_fn: str | Callable, **inputs) -> str`: start a child workflow; returns its handle.
 - `ctx.wait_workflow(handle: str) -> Any`: wait for a child workflow by handle.
 - Versioning helpers:
   - `ctx.get_version(change_id: str, version: int) -> int`

@@ -13,7 +13,7 @@ django.setup()
 from django.core.management import call_command
 from django_durable import engine, register
 from django_durable.models import WorkflowExecution, ActivityTask
-import testproj.durable_activities  # ensure activities registered
+from testproj.durable_activities import echo
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -34,30 +34,30 @@ def _step_to_waiting(execution):
 
 
 def test_get_version_survives_code_change():
-    register.workflows.pop("testproj.version_flow", None)
+    register.workflows.pop(f"{__name__}.version_flow", None)
 
     @register.workflow()
     def version_flow(ctx):
         v = ctx.get_version("change", 1)
         if v == 1:
-            res = ctx.run_activity("testproj.echo", "v1")
+            res = ctx.run_activity(echo, "v1")
         else:
-            res = ctx.run_activity("testproj.echo", "v2")
+            res = ctx.run_activity(echo, "v2")
         ctx.wait_signal("go")
         return res["value"]
 
-    exec1 = WorkflowExecution.objects.create(workflow_name="testproj.version_flow", input={})
+    exec1 = WorkflowExecution.objects.create(workflow_name=version_flow._durable_name, input={})
     _step_to_waiting(exec1)
 
-    register.workflows.pop("testproj.version_flow", None)
+    register.workflows.pop(f"{__name__}.version_flow", None)
 
     @register.workflow()
     def version_flow(ctx):
         v = ctx.get_version("change", 2)
         if v == 1:
-            res = ctx.run_activity("testproj.echo", "v1")
+            res = ctx.run_activity(echo, "v1")
         else:
-            res = ctx.run_activity("testproj.echo", "v2")
+            res = ctx.run_activity(echo, "v2")
         sig = ctx.wait_signal("go")
         return res["value"]
 
@@ -66,7 +66,7 @@ def test_get_version_survives_code_change():
     exec1.refresh_from_db()
     assert exec1.result == "v1"
 
-    exec2 = WorkflowExecution.objects.create(workflow_name="testproj.version_flow", input={})
+    exec2 = WorkflowExecution.objects.create(workflow_name=version_flow._durable_name, input={})
     _step_to_waiting(exec2)
     engine.signal_workflow(exec2, "go")
     engine.step_workflow(exec2)
@@ -75,26 +75,26 @@ def test_get_version_survives_code_change():
 
 
 def test_patch_deprecation_allows_removal():
-    register.workflows.pop("testproj.patch_flow", None)
+    register.workflows.pop(f"{__name__}.patch_flow", None)
 
     @register.workflow()
     def patch_flow(ctx):
         if ctx.patched("feat"):
-            res = ctx.run_activity("testproj.echo", "new")
+            res = ctx.run_activity(echo, "new")
         else:
-            res = ctx.run_activity("testproj.echo", "old")
+            res = ctx.run_activity(echo, "old")
         ctx.wait_signal("go")
         return res["value"]
 
-    exec1 = WorkflowExecution.objects.create(workflow_name="testproj.patch_flow", input={})
+    exec1 = WorkflowExecution.objects.create(workflow_name=patch_flow._durable_name, input={})
     _step_to_waiting(exec1)
 
-    register.workflows.pop("testproj.patch_flow", None)
+    register.workflows.pop(f"{__name__}.patch_flow", None)
 
     @register.workflow()
     def patch_flow(ctx):
         ctx.deprecate_patch("feat")
-        res = ctx.run_activity("testproj.echo", "new")
+        res = ctx.run_activity(echo, "new")
         ctx.wait_signal("go")
         return res["value"]
 
@@ -103,7 +103,7 @@ def test_patch_deprecation_allows_removal():
     exec1.refresh_from_db()
     assert exec1.result == "new"
 
-    exec2 = WorkflowExecution.objects.create(workflow_name="testproj.patch_flow", input={})
+    exec2 = WorkflowExecution.objects.create(workflow_name=patch_flow._durable_name, input={})
     _step_to_waiting(exec2)
     engine.signal_workflow(exec2, "go")
     engine.step_workflow(exec2)
