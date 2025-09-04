@@ -32,6 +32,8 @@ from django_durable.engine import Context, step_workflow
 from django_durable.models import ActivityTask, WorkflowExecution, HistoryEvent
 from django_durable.constants import HistoryEventType, ErrorCode
 from django_durable.management.commands.durable_worker import Command
+from testproj.durable_activities import add
+from testproj.durable_workflows import retry_flow
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -45,12 +47,23 @@ def flush_db():
 
 
 def test_run_workflow():
-    res = run_workflow("testproj.retry_flow", key="k1", fail_times=2)
+    res = run_workflow(retry_flow, key="k1", fail_times=2)
+    assert res == {"attempts": 3}
+
+
+def test_run_workflow_by_name():
+    res = run_workflow(retry_flow._durable_name, key="k1", fail_times=2)
     assert res == {"attempts": 3}
 
 
 def test_start_and_wait_workflow():
-    handle = start_workflow("testproj.retry_flow", key="k2", fail_times=1)
+    handle = start_workflow(retry_flow, key="k2", fail_times=1)
+    res = wait_workflow(handle)
+    assert res == {"attempts": 2}
+
+
+def test_start_and_wait_workflow_by_name():
+    handle = start_workflow(retry_flow._durable_name, key="k2", fail_times=1)
     res = wait_workflow(handle)
     assert res == {"attempts": 2}
 
@@ -58,20 +71,29 @@ def test_start_and_wait_workflow():
 def test_activity_within_workflow():
     @register.workflow()
     def add_flow(ctx, a, b):
-        return ctx.run_activity("testproj.add", a, b)
+        return ctx.run_activity(add, a, b)
 
-    res = run_workflow("testproj.add_flow", a=3, b=4)
+    res = run_workflow(add_flow, a=3, b=4)
+    assert res == {"value": 7}
+
+
+def test_activity_within_workflow_by_name():
+    @register.workflow()
+    def add_flow(ctx, a, b):
+        return ctx.run_activity(add._durable_name, a, b)
+
+    res = run_workflow(add_flow, a=3, b=4)
     assert res == {"value": 7}
 
 
 def test_parallel_activities():
     @register.workflow()
     def parent(ctx):
-        handles = [ctx.start_activity("testproj.add", i, i + 1) for i in range(3)]
+        handles = [ctx.start_activity(add, i, i + 1) for i in range(3)]
         results = [ctx.wait_activity(h) for h in handles]
         return {"results": results}
 
-    res = run_workflow("testproj.parent")
+    res = run_workflow(parent)
     assert res == {"results": [{"value": 1}, {"value": 3}, {"value": 5}]}
 
 
@@ -82,9 +104,22 @@ def test_run_workflow_with_child_workflow():
 
     @register.workflow()
     def parent(ctx, x):
-        return {"child": ctx.run_workflow("testproj.child", x=x)}
+        return {"child": ctx.run_workflow(child, x=x)}
 
-    res = run_workflow("testproj.parent", x=3)
+    res = run_workflow(parent, x=3)
+    assert res == {"child": {"res": 4}}
+
+
+def test_run_workflow_with_child_workflow_by_name():
+    @register.workflow()
+    def child(ctx, x):
+        return {"res": x + 1}
+
+    @register.workflow()
+    def parent(ctx, x):
+        return {"child": ctx.run_workflow(child._durable_name, x=x)}
+
+    res = run_workflow(parent._durable_name, x=3)
     assert res == {"child": {"res": 4}}
 
 
@@ -95,10 +130,10 @@ def test_child_workflow_failure_propagates():
 
     @register.workflow()
     def parent(ctx):
-        ctx.run_workflow("testproj.failing_child")
+        ctx.run_workflow(failing_child)
 
     with pytest.raises(WorkflowException):
-        run_workflow("testproj.parent")
+        run_workflow(parent)
 
 
 def test_signal_queue_consumed_in_order():
@@ -108,7 +143,7 @@ def test_signal_queue_consumed_in_order():
         second = ctx.wait_signal("go")
         return {"signals": [first, second]}
 
-    handle = start_workflow("testproj.sig_flow")
+    handle = start_workflow(sig_flow)
     signal_workflow(handle, "go", {"n": 1})
     signal_workflow(handle, "go", {"n": 2})
     res = wait_workflow(handle)
@@ -141,7 +176,7 @@ def test_wait_workflow_raises_workflowtimeout():
 def test_activity_input_mismatch_raises_nondeterminism():
     wf = WorkflowExecution.objects.create(workflow_name="wf")
     ctx = Context(execution=wf)
-    ctx.start_activity("testproj.add", 1, b=2)
+    ctx.start_activity(add, 1, b=2)
     ev = HistoryEvent.objects.get(
         execution=wf,
         pos=0,
@@ -149,18 +184,18 @@ def test_activity_input_mismatch_raises_nondeterminism():
     )
     assert ev.details["input"] == json.dumps({"args": [1], "kwargs": {"b": 2}})
     ctx_replay = Context(execution=wf)
-    ctx_replay.start_activity("testproj.add", 1, b=2)
+    ctx_replay.start_activity(add, 1, b=2)
     ctx_mismatch = Context(execution=wf)
     with pytest.raises(NondeterminismError):
-        ctx_mismatch.start_activity("testproj.add", 1, b=3)
+        ctx_mismatch.start_activity(add, 1, b=3)
 
 
 def test_cancel_workflow_programmatically():
     @register.workflow()
     def cancel_flow(ctx):
-        ctx.run_activity("testproj.add", 1, 2)
+        ctx.run_activity(add, 1, 2)
 
-    handle = start_workflow("testproj.cancel_flow")
+    handle = start_workflow(cancel_flow)
     wf = WorkflowExecution.objects.get(pk=handle)
     step_workflow(wf)
 
@@ -175,15 +210,15 @@ def test_cancel_workflow_programmatically():
 def test_cancel_activity_via_context():
     @register.workflow()
     def cancel_act(ctx):
-        h = ctx.start_activity("testproj.add", 1, 2)
+        h = ctx.start_activity(add, 1, 2)
         ctx.cancel_activity(h)
         with pytest.raises(ActivityError):
             ctx.wait_activity(h)
         return {"canceled": True}
 
-    res = run_workflow("testproj.cancel_act")
+    res = run_workflow(cancel_act)
     assert res == {"canceled": True}
-    wf = WorkflowExecution.objects.get(workflow_name="testproj.cancel_act")
+    wf = WorkflowExecution.objects.get(workflow_name=cancel_act._durable_name)
     assert HistoryEvent.objects.filter(
         execution=wf, type=HistoryEventType.ACTIVITY_CANCELED.value
     ).exists()
@@ -197,15 +232,15 @@ def test_cancel_child_workflow_via_context():
 
     @register.workflow()
     def parent_cancel_child(ctx):
-        handle = ctx.start_workflow("testproj.child_to_cancel")
+        handle = ctx.start_workflow(child_to_cancel._durable_name)
         ctx.cancel_workflow(handle)
         with pytest.raises(WorkflowException):
             ctx.wait_workflow(handle)
         return {"canceled": True}
 
-    res = run_workflow("testproj.parent_cancel_child")
+    res = run_workflow(parent_cancel_child)
     assert res == {"canceled": True}
-    wf = WorkflowExecution.objects.get(workflow_name="testproj.parent_cancel_child")
+    wf = WorkflowExecution.objects.get(workflow_name=parent_cancel_child._durable_name)
     assert HistoryEvent.objects.filter(
         execution=wf, type=HistoryEventType.CHILD_WORKFLOW_CANCELED.value
     ).exists()
