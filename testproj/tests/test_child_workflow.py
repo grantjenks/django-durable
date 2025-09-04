@@ -66,6 +66,22 @@ def read_child(parent_id):
         con.close()
 
 
+def get_child_id(parent_id):
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        norm_parent = parent_id.replace('-', '')
+        cur.execute(
+            "SELECT id FROM django_durable_workflowexecution WHERE parent_id=?",
+            (norm_parent,),
+        )
+        row = cur.fetchone()
+        assert row, "Child workflow not found"
+        return str(uuid.UUID(row[0]))
+    finally:
+        con.close()
+
+
 def test_parent_waits_for_child(tmp_path):
     run_manage("flush", "--noinput")
     out = run_manage(
@@ -85,3 +101,28 @@ def test_parent_waits_for_child(tmp_path):
     c_status, c_result = read_child(parent_id)
     assert c_status == "COMPLETED"
     assert c_result == {"y": 3}
+
+
+def test_cancel_cascades_to_children(tmp_path):
+    run_manage("flush", "--noinput")
+    out = run_manage("durable_start", "testproj.parent_cascade_workflow")
+    parent_id = out.splitlines()[-1].strip()
+
+    # allow child and grandchild to start
+    run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "20")
+
+    child_id = get_child_id(parent_id)
+    grandchild_id = get_child_id(child_id)
+
+    run_manage("durable_cancel", parent_id, "--reason", "test")
+
+    # process cancellations
+    run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "20")
+
+    p_status, _ = read_workflow(parent_id)
+    c_status, _ = read_workflow(child_id)
+    g_status, _ = read_workflow(grandchild_id)
+
+    assert p_status == "CANCELED"
+    assert c_status == "CANCELED"
+    assert g_status == "CANCELED"

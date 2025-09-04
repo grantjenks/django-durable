@@ -113,3 +113,23 @@ def long_activity_flow(ctx, loops: int, delay: float):
     for _ in range(loops):
         ctx.run_activity("testproj.slow_sleep", delay)
     return {"done": loops}
+
+
+@register.workflow()
+def grandchild_sleep_workflow(ctx):
+    """Workflow that simply sleeps so it can be canceled later."""
+    ctx.sleep(3600)
+
+
+@register.workflow()
+def child_child_workflow(ctx):
+    """Child workflow that starts a grandchild workflow and sleeps."""
+    ctx.start_workflow("testproj.grandchild_sleep_workflow")
+    ctx.sleep(3600)
+
+
+@register.workflow()
+def parent_cascade_workflow(ctx):
+    """Parent workflow that starts a child workflow and sleeps."""
+    ctx.start_workflow("testproj.child_child_workflow")
+    ctx.sleep(3600)
