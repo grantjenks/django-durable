@@ -2,7 +2,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -84,8 +83,15 @@ def test_workflow_timeout(tmp_path):
         "0.1",
     )
     exec_id = out.splitlines()[-1].strip()
-    time.sleep(0.2)
-    run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "20")
+    run_manage(
+        "durable_worker",
+        "--batch",
+        "50",
+        "--tick",
+        "0.01",
+        "--iterations",
+        "20",
+    )
     status, _ = read_workflow(exec_id)
     assert status == "TIMED_OUT"
 
