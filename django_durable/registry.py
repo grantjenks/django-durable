@@ -1,6 +1,6 @@
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Dict, Optional
 
 from django.apps import apps
 
@@ -9,8 +9,8 @@ from .retry import RetryPolicy
 
 class Register:
     def __init__(self):
-        self.workflows: Dict[str, Callable] = {}
-        self.activities: Dict[str, Callable] = {}
+        self.workflows: dict[str, Callable] = {}
+        self.activities: dict[str, Callable] = {}
 
     def _durable_name(self, fn: Callable) -> str:
         module = sys.modules.get(fn.__module__)
@@ -26,7 +26,7 @@ class Register:
             app_name = fn.__module__.split('.')[0]
         return f"{app_name}.{fn.__name__}"
 
-    def workflow(self, timeout: Optional[float] = None):
+    def workflow(self, timeout: float | None = None):
         def deco(fn):
             if timeout is not None:
                 fn._durable_timeout = timeout
@@ -39,9 +39,9 @@ class Register:
 
     def activity(
         self,
-        timeout: Optional[float] = None,
-        heartbeat_timeout: Optional[float] = None,
-        retry_policy: Optional[RetryPolicy] = None,
+        timeout: float | None = None,
+        heartbeat_timeout: float | None = None,
+        retry_policy: RetryPolicy | None = None,
     ):
         def deco(fn):
             rp = retry_policy or RetryPolicy()

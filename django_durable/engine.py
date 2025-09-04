@@ -3,7 +3,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Optional, Union
+from typing import Any
 
 from django.db import transaction
 from django.utils import timezone
@@ -296,7 +296,7 @@ class Context:
         raise NeedsPause()
 
     def start_workflow(
-        self, name: str, timeout: Optional[float] = None, **input
+        self, name: str, timeout: float | None = None, **input
     ) -> str:
         """Schedule a child workflow and return its handle."""
         pos = self._bump()
@@ -368,12 +368,12 @@ class Context:
             raise NeedsPause()
         raise RuntimeError(f'Unknown workflow handle {handle}')
 
-    def run_workflow(self, name: str, timeout: Optional[float] = None, **input) -> Any:
+    def run_workflow(self, name: str, timeout: float | None = None, **input) -> Any:
         handle = self.start_workflow(name, timeout=timeout, **input)
         return self.wait_workflow(handle)
 
 
-def _run_workflow_once(exec_obj: WorkflowExecution) -> Optional[Any]:
+def _run_workflow_once(exec_obj: WorkflowExecution) -> Any | None:
     """Run the workflow function until it needs to pause or completes."""
     fn = register.workflows[exec_obj.workflow_name]
     ctx = Context(execution=exec_obj)
@@ -579,8 +579,8 @@ def activity_heartbeat(details: Any = None):
 
 
 def cancel_workflow(
-    execution: Union[WorkflowExecution, str],
-    reason: Optional[str] = None,
+    execution: WorkflowExecution | str,
+    reason: str | None = None,
     cancel_queued_activities: bool = True,
 ):
     """Cancel a workflow execution and optionally cancel its queued activities.
@@ -652,7 +652,7 @@ def cancel_workflow(
 
 
 def signal_workflow(
-    execution: Union[WorkflowExecution, str], name: str, payload: Any = None
+    execution: WorkflowExecution | str, name: str, payload: Any | None = None
 ):
     """Signal a workflow by enqueueing an external signal and mark it runnable.
 
@@ -685,7 +685,7 @@ def signal_workflow(
 
 
 def _start_workflow(
-    workflow_name: str, timeout: Optional[float] = None, **inputs
+    workflow_name: str, timeout: float | None = None, **inputs
 ) -> str:
     """Create a workflow execution and return its handle (ID)."""
     if workflow_name not in register.workflows:
@@ -757,14 +757,14 @@ def _run_loop(execution: WorkflowExecution, tick: float = 0.01):
     raise WorkflowException(execution.error or execution.status)
 
 
-def _wait_workflow(execution: Union[WorkflowExecution, str]) -> Any:
+def _wait_workflow(execution: WorkflowExecution | str) -> Any:
     """Wait for a workflow execution to complete and return its result."""
     if not isinstance(execution, WorkflowExecution):
         execution = WorkflowExecution.objects.get(pk=execution)
     return _run_loop(execution)
 
 
-def _run_workflow(workflow_name: str, timeout: Optional[float] = None, **inputs) -> Any:
+def _run_workflow(workflow_name: str, timeout: float | None = None, **inputs) -> Any:
     """Convenience helper: start a workflow and wait for its result."""
     exec_id = _start_workflow(workflow_name, timeout=timeout, **inputs)
     return _wait_workflow(exec_id)

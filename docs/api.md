@@ -25,7 +25,7 @@ exec_id = start_workflow("myapp.onboard_user", user_id=7)
 ```
 
 - Summary: Block until the workflow completes and return its result.
-- Params: `execution: Union[WorkflowExecution, str]`
+- Params: `execution: WorkflowExecution | str`
 - Returns: JSON-serializable result
 - Example:
 
@@ -45,7 +45,7 @@ result = wait_workflow(exec_id)
 ```
 
 - Summary: Enqueue an external signal for a workflow and mark it runnable.
-- Params: `execution: Union[WorkflowExecution, str]`, `name: str`, `payload: Any = None`
+- Params: `execution: WorkflowExecution | str`, `name: str`, `payload: Any | None = None`
 - Returns: `None`
 - Example:
 
@@ -58,7 +58,7 @@ signal_workflow(exec_id, "go", {"clicked": True})
 ```
 
 - Summary: Cancel a workflow execution and optionally fail queued activities.
-- Params: `execution: Union[WorkflowExecution, str]`, `reason: str | None = None`, `cancel_queued_activities: bool = True`
+- Params: `execution: WorkflowExecution | str`, `reason: str | None = None`, `cancel_queued_activities: bool = True`
 - Returns: `None`
 - Example:
 

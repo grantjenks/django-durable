@@ -5,7 +5,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 MANAGE = str(ROOT / "manage.py")
@@ -22,7 +22,7 @@ def run_manage(*args: str) -> str:
     return res.stdout.strip()
 
 
-def read_workflow(exec_id: str) -> Dict[str, Any]:
+def read_workflow(exec_id: str) -> dict[str, Any]:
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
@@ -40,7 +40,7 @@ def read_workflow(exec_id: str) -> Dict[str, Any]:
         con.close()
 
 
-def read_activity_statuses(exec_id: str) -> List[str]:
+def read_activity_statuses(exec_id: str) -> list[str]:
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
@@ -66,7 +66,7 @@ def run_worker(iterations: int = 50) -> None:
     )
 
 
-WORKFLOWS: List[Dict[str, Any]] = [
+WORKFLOWS: list[dict[str, Any]] = [
     {
         "name": "testproj.add_flow",
         "input": {"a": 1, "b": 2},
@@ -138,7 +138,7 @@ WORKFLOWS: List[Dict[str, Any]] = [
 ]
 
 
-def run_workflow(spec: Dict[str, Any]) -> None:
+def run_workflow(spec: dict[str, Any]) -> None:
     out = run_manage(
         "durable_start",
         spec["name"],
