@@ -20,8 +20,8 @@ dev = [
     "myst-parser>=2.0",
 ]
 
-[tool.setuptools]
-packages = ["django_durable"]
+[tool.setuptools.packages.find]
+include = ["django_durable*"]
 
 [build-system]
 requires = ["setuptools>=61", "wheel"]
