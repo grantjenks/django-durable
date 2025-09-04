@@ -1,10 +1,12 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import django
 import pytest
+from django.utils import timezone
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.append(str(ROOT))
@@ -30,7 +32,7 @@ from django_durable.exceptions import (
     WorkflowException,
     WorkflowTimeout,
 )
-from django_durable.engine import Context, step_workflow, _wait_workflow
+from django_durable.engine import Context
 from django_durable.models import ActivityTask, WorkflowExecution, HistoryEvent
 from django_durable.constants import HistoryEventType, ErrorCode
 from django_durable.management.commands.durable_worker import Command
@@ -48,6 +50,37 @@ def flush_db():
     call_command("flush", "--noinput")
 
 
+def _run_until_complete(execution):
+    if not isinstance(execution, WorkflowExecution):
+        execution = WorkflowExecution.objects.get(pk=execution)
+    terminal = {
+        WorkflowExecution.Status.COMPLETED,
+        WorkflowExecution.Status.FAILED,
+        WorkflowExecution.Status.CANCELED,
+        WorkflowExecution.Status.TIMED_OUT,
+    }
+    while True:
+        now = timezone.now()
+        task_ids = list(
+            ActivityTask.objects.filter(
+                status=ActivityTask.Status.QUEUED, after_time__lte=now
+            ).values_list("id", flat=True)
+        )
+        for tid in task_ids:
+            call_command("durable_internal_run_activity", str(tid))
+        wf_ids = list(
+            WorkflowExecution.objects.filter(
+                status=WorkflowExecution.Status.PENDING
+            ).values_list("id", flat=True)
+        )
+        for wid in wf_ids:
+            call_command("durable_internal_step_workflow", str(wid))
+        execution.refresh_from_db()
+        if execution.status in terminal:
+            break
+        time.sleep(0.01)
+
+
 def test_run_workflow():
     res = run_workflow(retry_flow, key="k1", fail_times=2)
     assert res == {"attempts": 3}
@@ -60,14 +93,14 @@ def test_run_workflow_by_name():
 
 def test_start_and_wait_workflow():
     handle = start_workflow(retry_flow, key="k2", fail_times=1)
-    _wait_workflow(handle)
+    _run_until_complete(handle)
     res = wait_workflow(handle)
     assert res == {"attempts": 2}
 
 
 def test_start_and_wait_workflow_by_name():
     handle = start_workflow(retry_flow._durable_name, key="k2", fail_times=1)
-    _wait_workflow(handle)
+    _run_until_complete(handle)
     res = wait_workflow(handle)
     assert res == {"attempts": 2}
 
@@ -150,7 +183,7 @@ def test_signal_queue_consumed_in_order():
     handle = start_workflow(sig_flow)
     signal_workflow(handle, "go", {"n": 1})
     signal_workflow(handle, "go", {"n": 2})
-    _wait_workflow(handle)
+    _run_until_complete(handle)
     res = wait_workflow(handle)
     assert res == {"signals": [{"n": 1}, {"n": 2}]}
 
@@ -233,7 +266,7 @@ def test_cancel_workflow_programmatically():
 
     handle = start_workflow(cancel_flow)
     wf = WorkflowExecution.objects.get(pk=handle)
-    step_workflow(wf)
+    call_command("durable_internal_step_workflow", str(wf.id))
 
     cancel_workflow(handle, reason="test")
 
