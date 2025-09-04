@@ -11,7 +11,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "testproj.settings")
 django.setup()
 
 from django.core.management import call_command
-from django_durable import engine, register
+from django_durable import register, signal_workflow
 from django_durable.models import WorkflowExecution, ActivityTask
 from testproj.durable_activities import echo
 
@@ -24,13 +24,13 @@ def migrate_db():
 def _run_activity(execution):
     task = ActivityTask.objects.filter(execution=execution).first()
     assert task is not None
-    engine.execute_activity(task)
+    call_command("durable_internal_run_activity", str(task.id))
 
 
 def _step_to_waiting(execution):
-    engine.step_workflow(execution)
+    call_command("durable_internal_step_workflow", str(execution.id))
     _run_activity(execution)
-    engine.step_workflow(execution)
+    call_command("durable_internal_step_workflow", str(execution.id))
 
 
 def test_get_version_survives_code_change():
@@ -61,15 +61,15 @@ def test_get_version_survives_code_change():
         sig = ctx.wait_signal("go")
         return res["value"]
 
-    engine.signal_workflow(exec1, "go")
-    engine.step_workflow(exec1)
+    signal_workflow(exec1, "go")
+    call_command("durable_internal_step_workflow", str(exec1.id))
     exec1.refresh_from_db()
     assert exec1.result == "v1"
 
     exec2 = WorkflowExecution.objects.create(workflow_name=version_flow._durable_name, input={})
     _step_to_waiting(exec2)
-    engine.signal_workflow(exec2, "go")
-    engine.step_workflow(exec2)
+    signal_workflow(exec2, "go")
+    call_command("durable_internal_step_workflow", str(exec2.id))
     exec2.refresh_from_db()
     assert exec2.result == "v2"
 
@@ -98,14 +98,14 @@ def test_patch_deprecation_allows_removal():
         ctx.wait_signal("go")
         return res["value"]
 
-    engine.signal_workflow(exec1, "go")
-    engine.step_workflow(exec1)
+    signal_workflow(exec1, "go")
+    call_command("durable_internal_step_workflow", str(exec1.id))
     exec1.refresh_from_db()
     assert exec1.result == "new"
 
     exec2 = WorkflowExecution.objects.create(workflow_name=patch_flow._durable_name, input={})
     _step_to_waiting(exec2)
-    engine.signal_workflow(exec2, "go")
-    engine.step_workflow(exec2)
+    signal_workflow(exec2, "go")
+    call_command("durable_internal_step_workflow", str(exec2.id))
     exec2.refresh_from_db()
     assert exec2.result == "new"
