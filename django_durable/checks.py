@@ -1,7 +1,6 @@
 import ast
 import inspect
 import textwrap
-from typing import List
 
 from django.core import checks
 
@@ -37,7 +36,7 @@ def _full_name(node: ast.AST) -> str:
 
 @checks.register()
 def check_workflow_determinism(app_configs, **kwargs):
-    errors: List[checks.CheckMessage] = []
+    errors: list[checks.CheckMessage] = []
 
     for name, fn in register.workflows.items():
         try:

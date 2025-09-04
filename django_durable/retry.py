@@ -1,8 +1,7 @@
-from __future__ import annotations
-
 import random
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
-from typing import Dict, List, Mapping
+from typing import Any
 
 
 def compute_backoff(policy: Mapping[str, float], attempt: int) -> float:
@@ -48,9 +47,9 @@ class RetryPolicy:
     maximum_attempts: int = 0  # 0 for unlimited
     jitter: float = 0.0
     strategy: str = "exponential"
-    non_retryable_error_types: List[str] = field(default_factory=list)
+    non_retryable_error_types: list[str] = field(default_factory=list)
 
-    def asdict(self) -> Dict:
+    def asdict(self) -> dict[str, Any]:
         return asdict(self)
 
 

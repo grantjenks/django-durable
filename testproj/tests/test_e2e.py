@@ -4,7 +4,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, List, Tuple
+from typing import Any
 
 import pytest
 import sqlite3
@@ -29,7 +29,7 @@ def migrate_db() -> None:
     run_manage("migrate", "--noinput")
 
 
-def read_workflow(exec_id: str) -> Tuple[str, Any]:
+def read_workflow(exec_id: str) -> tuple[str, Any]:
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
@@ -51,7 +51,7 @@ def read_workflow(exec_id: str) -> Tuple[str, Any]:
         con.close()
 
 
-def read_activity_statuses(exec_id: str) -> List[str]:
+def read_activity_statuses(exec_id: str) -> list[str]:
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
