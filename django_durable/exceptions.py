@@ -14,6 +14,14 @@ class NondeterminismError(WorkflowException):
     """Event history does not line up during step/replay of a workflow."""
 
 
+class UnknownWorkflowError(WorkflowException):
+    """Occurs when the workflow name is not registered."""
+
+    def __init__(self, name: str):
+        self.name = name
+        super().__init__(f"Unknown workflow {name}")
+
+
 class ActivityException(DurableException):
     """Base class for activity-related exceptions."""
 
