@@ -22,6 +22,7 @@ from django_durable import (
     register,
 )
 from django_durable.exceptions import (
+    ActivityError,
     ActivityTimeout,
     NondeterminismError,
     WorkflowException,
@@ -30,6 +31,7 @@ from django_durable.exceptions import (
 from django_durable.engine import Context, step_workflow
 from django_durable.models import ActivityTask, WorkflowExecution, HistoryEvent
 from django_durable.constants import HistoryEventType, ErrorCode
+from django_durable.management.commands.durable_worker import Command
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -168,4 +170,60 @@ def test_cancel_workflow_programmatically():
     assert wf.status == WorkflowExecution.Status.CANCELED
     tasks = ActivityTask.objects.filter(execution=wf)
     assert tasks and all(t.status == ActivityTask.Status.FAILED for t in tasks)
+
+
+def test_cancel_activity_via_context():
+    @register.workflow()
+    def cancel_act(ctx):
+        h = ctx.start_activity("testproj.add", 1, 2)
+        ctx.cancel_activity(h)
+        with pytest.raises(ActivityError):
+            ctx.wait_activity(h)
+        return {"canceled": True}
+
+    res = run_workflow("testproj.cancel_act")
+    assert res == {"canceled": True}
+    wf = WorkflowExecution.objects.get(workflow_name="testproj.cancel_act")
+    assert HistoryEvent.objects.filter(
+        execution=wf, type=HistoryEventType.ACTIVITY_CANCELED.value
+    ).exists()
+
+
+def test_cancel_child_workflow_via_context():
+    @register.workflow()
+    def child_to_cancel(ctx):
+        ctx.sleep(1)
+        return {"done": True}
+
+    @register.workflow()
+    def parent_cancel_child(ctx):
+        handle = ctx.start_workflow("testproj.child_to_cancel")
+        ctx.cancel_workflow(handle)
+        with pytest.raises(WorkflowException):
+            ctx.wait_workflow(handle)
+        return {"canceled": True}
+
+    res = run_workflow("testproj.parent_cancel_child")
+    assert res == {"canceled": True}
+    wf = WorkflowExecution.objects.get(workflow_name="testproj.parent_cancel_child")
+    assert HistoryEvent.objects.filter(
+        execution=wf, type=HistoryEventType.CHILD_WORKFLOW_CANCELED.value
+    ).exists()
+
+
+def test_child_workflow_timeout_event():
+    parent = WorkflowExecution.objects.create(workflow_name="parent")
+    child = WorkflowExecution.objects.create(
+        workflow_name="child", parent=parent, parent_pos=1
+    )
+    cmd = Command()
+    cmd._timeout_workflow(child)
+    ctx = Context(execution=parent)
+    with pytest.raises(WorkflowTimeout):
+        ctx.wait_workflow(str(child.id))
+    assert HistoryEvent.objects.filter(
+        execution=parent,
+        type=HistoryEventType.CHILD_WORKFLOW_TIMED_OUT.value,
+        details__child_id=str(child.id),
+    ).exists()
 

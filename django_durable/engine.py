@@ -176,6 +176,7 @@ class Context:
                     HistoryEventType.ACTIVITY_COMPLETED.value,
                     HistoryEventType.ACTIVITY_FAILED.value,
                     HistoryEventType.ACTIVITY_TIMED_OUT.value,
+                    HistoryEventType.ACTIVITY_CANCELED.value,
                 ),
             )
             .order_by('id')
@@ -188,6 +189,9 @@ class Context:
             if ev_done.type == HistoryEventType.ACTIVITY_TIMED_OUT.value:
                 err = ev_done.details.get('error', ErrorCode.ACTIVITY_TIMEOUT.value)
                 raise ActivityTimeout(err)
+            if ev_done.type == HistoryEventType.ACTIVITY_CANCELED.value:
+                err = ev_done.details.get('error', ErrorCode.WORKFLOW_CANCELED.value)
+                raise ActivityError(RuntimeError(err))
             return ev_done.details.get('result')
 
         scheduled = HistoryEvent.objects.filter(
@@ -198,6 +202,70 @@ class Context:
         if scheduled:
             raise NeedsPause()
         raise RuntimeError(f'Unknown activity handle {handle}')
+
+    def cancel_activity(self, handle: int, reason: str | None = None):
+        """Cancel a previously scheduled activity if still queued."""
+        pos = handle
+        ev_done = (
+            HistoryEvent.objects.filter(
+                execution=self.execution,
+                pos=pos,
+                type__in=[
+                    HistoryEventType.ACTIVITY_COMPLETED.value,
+                    HistoryEventType.ACTIVITY_FAILED.value,
+                    HistoryEventType.ACTIVITY_TIMED_OUT.value,
+                    HistoryEventType.ACTIVITY_CANCELED.value,
+                ],
+            )
+            .order_by('id')
+            .last()
+        )
+        if ev_done:
+            return
+        scheduled = HistoryEvent.objects.filter(
+            execution=self.execution,
+            pos=pos,
+            type=HistoryEventType.ACTIVITY_SCHEDULED.value,
+        ).exists()
+        if not scheduled:
+            raise RuntimeError(f'Unknown activity handle {handle}')
+        with transaction.atomic():
+            ev_done = (
+                HistoryEvent.objects.filter(
+                    execution=self.execution,
+                    pos=pos,
+                    type__in=[
+                        HistoryEventType.ACTIVITY_COMPLETED.value,
+                        HistoryEventType.ACTIVITY_FAILED.value,
+                        HistoryEventType.ACTIVITY_TIMED_OUT.value,
+                        HistoryEventType.ACTIVITY_CANCELED.value,
+                    ],
+                )
+                .order_by('id')
+                .last()
+            )
+            if ev_done:
+                return
+            now = timezone.now()
+            ActivityTask.objects.filter(
+                execution=self.execution,
+                pos=pos,
+                status=ActivityTask.Status.QUEUED,
+            ).update(
+                status=ActivityTask.Status.FAILED,
+                error=ErrorCode.WORKFLOW_CANCELED.value,
+                finished_at=now,
+                updated_at=now,
+            )
+            details = {'error': ErrorCode.WORKFLOW_CANCELED.value}
+            if reason:
+                details['reason'] = reason
+            HistoryEvent.objects.create(
+                execution=self.execution,
+                type=HistoryEventType.ACTIVITY_CANCELED.value,
+                pos=pos,
+                details=details,
+            )
 
     def run_activity(self, name: str, *args, **kwargs) -> Any:
         handle = self.start_activity(name, *args, **kwargs)
@@ -346,6 +414,8 @@ class Context:
                 type__in=[
                     HistoryEventType.CHILD_WORKFLOW_COMPLETED.value,
                     HistoryEventType.CHILD_WORKFLOW_FAILED.value,
+                    HistoryEventType.CHILD_WORKFLOW_CANCELED.value,
+                    HistoryEventType.CHILD_WORKFLOW_TIMED_OUT.value,
                 ],
                 details__child_id=handle,
             )
@@ -358,6 +428,12 @@ class Context:
                 if err == ErrorCode.WORKFLOW_TIMEOUT.value:
                     raise WorkflowTimeout(err)
                 raise WorkflowException(err)
+            if ev_done.type == HistoryEventType.CHILD_WORKFLOW_CANCELED.value:
+                err = ev_done.details.get('error', ErrorCode.WORKFLOW_CANCELED.value)
+                raise WorkflowException(err)
+            if ev_done.type == HistoryEventType.CHILD_WORKFLOW_TIMED_OUT.value:
+                err = ev_done.details.get('error', ErrorCode.WORKFLOW_TIMEOUT.value)
+                raise WorkflowTimeout(err)
             return ev_done.details.get('result')
         scheduled = HistoryEvent.objects.filter(
             execution=self.execution,
@@ -371,6 +447,26 @@ class Context:
     def run_workflow(self, name: str, timeout: float | None = None, **input) -> Any:
         handle = self.start_workflow(name, timeout=timeout, **input)
         return self.wait_workflow(handle)
+
+    def cancel_workflow(self, handle: str, reason: str | None = None):
+        """Cancel a previously started child workflow."""
+        ev_done = (
+            HistoryEvent.objects.filter(
+                execution=self.execution,
+                type__in=[
+                    HistoryEventType.CHILD_WORKFLOW_COMPLETED.value,
+                    HistoryEventType.CHILD_WORKFLOW_FAILED.value,
+                    HistoryEventType.CHILD_WORKFLOW_CANCELED.value,
+                    HistoryEventType.CHILD_WORKFLOW_TIMED_OUT.value,
+                ],
+                details__child_id=handle,
+            )
+            .order_by('id')
+            .last()
+        )
+        if ev_done:
+            return
+        cancel_workflow(handle, reason=reason)
 
 
 def _run_workflow_once(exec_obj: WorkflowExecution) -> Any | None:
@@ -633,7 +729,7 @@ def cancel_workflow(
 
         _notify_parent(
             execution,
-            HistoryEventType.CHILD_WORKFLOW_FAILED.value,
+            HistoryEventType.CHILD_WORKFLOW_CANCELED.value,
             {'error': ErrorCode.WORKFLOW_CANCELED.value},
         )
 
