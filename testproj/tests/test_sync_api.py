@@ -25,10 +25,12 @@ from django_durable.exceptions import (
     ActivityError,
     ActivityTimeout,
     NondeterminismError,
+    WaitActivityTimeout,
+    WaitWorkflowTimeout,
     WorkflowException,
     WorkflowTimeout,
 )
-from django_durable.engine import Context, step_workflow
+from django_durable.engine import Context, step_workflow, _wait_workflow
 from django_durable.models import ActivityTask, WorkflowExecution, HistoryEvent
 from django_durable.constants import HistoryEventType, ErrorCode
 from django_durable.management.commands.durable_worker import Command
@@ -58,12 +60,14 @@ def test_run_workflow_by_name():
 
 def test_start_and_wait_workflow():
     handle = start_workflow(retry_flow, key="k2", fail_times=1)
+    _wait_workflow(handle)
     res = wait_workflow(handle)
     assert res == {"attempts": 2}
 
 
 def test_start_and_wait_workflow_by_name():
     handle = start_workflow(retry_flow._durable_name, key="k2", fail_times=1)
+    _wait_workflow(handle)
     res = wait_workflow(handle)
     assert res == {"attempts": 2}
 
@@ -146,6 +150,7 @@ def test_signal_queue_consumed_in_order():
     handle = start_workflow(sig_flow)
     signal_workflow(handle, "go", {"n": 1})
     signal_workflow(handle, "go", {"n": 2})
+    _wait_workflow(handle)
     res = wait_workflow(handle)
     assert res == {"signals": [{"n": 1}, {"n": 2}]}
 
@@ -163,6 +168,18 @@ def test_activity_timeout_can_be_caught():
         ctx.wait_activity(1)
 
 
+def test_wait_activity_timeout_zero():
+    wf = WorkflowExecution.objects.create(workflow_name="wf")
+    HistoryEvent.objects.create(
+        execution=wf,
+        type=HistoryEventType.ACTIVITY_SCHEDULED.value,
+        pos=1,
+    )
+    ctx = Context(execution=wf)
+    with pytest.raises(WaitActivityTimeout):
+        ctx.wait_activity(1, timeout=0)
+
+
 def test_wait_workflow_raises_workflowtimeout():
     wf = WorkflowExecution.objects.create(
         workflow_name="wf",
@@ -171,6 +188,25 @@ def test_wait_workflow_raises_workflowtimeout():
     )
     with pytest.raises(WorkflowTimeout):
         wait_workflow(wf)
+
+
+def test_wait_workflow_timeout_zero():
+    wf = WorkflowExecution.objects.create(workflow_name="wf")
+    with pytest.raises(WaitWorkflowTimeout):
+        wait_workflow(wf, timeout=0)
+
+
+def test_ctx_wait_workflow_timeout_zero():
+    parent = WorkflowExecution.objects.create(workflow_name="parent")
+    child = WorkflowExecution.objects.create(workflow_name="child", parent=parent)
+    HistoryEvent.objects.create(
+        execution=parent,
+        type=HistoryEventType.CHILD_WORKFLOW_SCHEDULED.value,
+        details={"child_id": str(child.id)},
+    )
+    ctx = Context(execution=parent)
+    with pytest.raises(WaitWorkflowTimeout):
+        ctx.wait_workflow(str(child.id), timeout=0)
 
 
 def test_activity_input_mismatch_raises_nondeterminism():

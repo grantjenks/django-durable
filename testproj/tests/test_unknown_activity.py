@@ -4,12 +4,14 @@ import sys
 from pathlib import Path
 
 import pytest
+from django.db import connections
 
 ROOT = Path(__file__).resolve().parents[2]
 MANAGE = str(ROOT / "manage.py")
 DB_PATH = str(ROOT / "db.sqlite3")
 
 def run_manage(*args: str, check: bool = True):
+    connections.close_all()
     cmd = [sys.executable, MANAGE, *args]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if check and res.returncode != 0:
