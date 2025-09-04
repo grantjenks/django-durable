@@ -161,7 +161,7 @@ def my_activity():
 
 ## Errors and Exceptions
 
-- `start_workflow`: raises `KeyError` if the named workflow is not registered.
+- `start_workflow`: raises `UnknownWorkflowError` if the named workflow is not registered.
 - `wait_workflow`/`run_workflow`: raise `RuntimeError` if the workflow ends in FAILED/TIMED_OUT/CANCELED; message contains the error code or text.
 - Activities with retries/timeouts propagate failure info to the workflow via history events.
 

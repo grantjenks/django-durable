@@ -20,6 +20,7 @@ from .exceptions import (
     ActivityTimeout,
     NondeterminismError,
     UnknownActivityError,
+    UnknownWorkflowError,
     WorkflowException,
     WorkflowTimeout,
 )
@@ -379,9 +380,11 @@ class Context:
         )
         if scheduled:
             return scheduled.details.get('child_id')
+        fn = register.workflows.get(name)
+        if fn is None:
+            raise UnknownWorkflowError(name)
         with transaction.atomic():
-            fn = register.workflows.get(name)
-            if timeout is None and fn is not None:
+            if timeout is None:
                 timeout = getattr(fn, '_durable_timeout', None)
             expires_at = None
             if timeout is not None:
@@ -784,9 +787,9 @@ def _start_workflow(
     workflow_name: str, timeout: float | None = None, **inputs
 ) -> str:
     """Create a workflow execution and return its handle (ID)."""
-    if workflow_name not in register.workflows:
-        raise KeyError(f"Unknown workflow '{workflow_name}'")
-    fn = register.workflows[workflow_name]
+    fn = register.workflows.get(workflow_name)
+    if fn is None:
+        raise UnknownWorkflowError(workflow_name)
     if timeout is None:
         timeout = getattr(fn, '_durable_timeout', None)
     expires_at = None
