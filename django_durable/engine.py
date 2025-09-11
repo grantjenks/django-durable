@@ -21,10 +21,10 @@ from .exceptions import (
     NondeterminismError,
     UnknownActivityError,
     UnknownWorkflowError,
-    WorkflowException,
-    WorkflowTimeout,
     WaitActivityTimeout,
     WaitWorkflowTimeout,
+    WorkflowException,
+    WorkflowTimeout,
 )
 from .models import ActivityTask, HistoryEvent, WorkflowExecution
 from .registry import register
@@ -100,7 +100,7 @@ class Context:
     def start_activity(self, name: str | Callable, *args, **kwargs) -> int:
         """Schedule an activity and return its handle."""
         if not isinstance(name, str):
-            name = getattr(name, "_durable_name")
+            name = getattr(name, '_durable_name')
         pos = self._bump()
         ev = (
             HistoryEvent.objects.filter(
@@ -199,7 +199,9 @@ class Context:
                     err = ev_done.details.get('error', ErrorCode.ACTIVITY_TIMEOUT.value)
                     raise ActivityTimeout(err)
                 if ev_done.type == HistoryEventType.ACTIVITY_CANCELED.value:
-                    err = ev_done.details.get('error', ErrorCode.WORKFLOW_CANCELED.value)
+                    err = ev_done.details.get(
+                        'error', ErrorCode.WORKFLOW_CANCELED.value
+                    )
                     raise ActivityError(RuntimeError(err))
                 return ev_done.details.get('result')
 
@@ -383,7 +385,7 @@ class Context:
     ) -> str:
         """Schedule a child workflow and return its handle."""
         if not isinstance(name, str):
-            name = getattr(name, "_durable_name")
+            name = getattr(name, '_durable_name')
         pos = self._bump()
         scheduled = (
             HistoryEvent.objects.filter(
@@ -452,7 +454,9 @@ class Context:
                         raise WorkflowTimeout(err)
                     raise WorkflowException(err)
                 if ev_done.type == HistoryEventType.CHILD_WORKFLOW_CANCELED.value:
-                    err = ev_done.details.get('error', ErrorCode.WORKFLOW_CANCELED.value)
+                    err = ev_done.details.get(
+                        'error', ErrorCode.WORKFLOW_CANCELED.value
+                    )
                     raise WorkflowException(err)
                 if ev_done.type == HistoryEventType.CHILD_WORKFLOW_TIMED_OUT.value:
                     err = ev_done.details.get('error', ErrorCode.WORKFLOW_TIMEOUT.value)
@@ -473,7 +477,9 @@ class Context:
 
             time.sleep(1)
 
-    def run_workflow(self, name: str | Callable, timeout: float | None = None, **input) -> Any:
+    def run_workflow(
+        self, name: str | Callable, timeout: float | None = None, **input
+    ) -> Any:
         handle = self.start_workflow(name, timeout=timeout, **input)
         return self.wait_workflow(handle)
 
@@ -704,7 +710,7 @@ def activity_heartbeat(details: Any = None):
 
 
 def cancel_workflow(
-    execution: WorkflowExecution | str,
+    execution: WorkflowExecution | int | str,
     reason: str | None = None,
     cancel_queued_activities: bool = True,
 ):
@@ -777,7 +783,7 @@ def cancel_workflow(
 
 
 def signal_workflow(
-    execution: WorkflowExecution | str, name: str, payload: Any | None = None
+    execution: WorkflowExecution | int | str, name: str, payload: Any | None = None
 ):
     """Signal a workflow by enqueueing an external signal and mark it runnable.
 
@@ -814,7 +820,7 @@ def _start_workflow(
 ) -> str:
     """Create a workflow execution and return its handle (ID)."""
     workflow_name = (
-        workflow if isinstance(workflow, str) else getattr(workflow, "_durable_name")
+        workflow if isinstance(workflow, str) else getattr(workflow, '_durable_name')
     )
     fn = register.workflows.get(workflow_name)
     if fn is None:
@@ -885,14 +891,16 @@ def _run_loop(execution: WorkflowExecution, tick: float = 0.01):
     raise WorkflowException(execution.error or execution.status)
 
 
-def _wait_workflow(execution: WorkflowExecution | str) -> Any:
+def _wait_workflow(execution: WorkflowExecution | int | str) -> Any:
     """Wait for a workflow execution to complete and return its result."""
     if not isinstance(execution, WorkflowExecution):
         execution = WorkflowExecution.objects.get(pk=execution)
     return _run_loop(execution)
 
 
-def _run_workflow(workflow: str | Callable, timeout: float | None = None, **inputs) -> Any:
+def _run_workflow(
+    workflow: str | Callable, timeout: float | None = None, **inputs
+) -> Any:
     """Convenience helper: start a workflow and wait for its result."""
     exec_id = _start_workflow(workflow, timeout=timeout, **inputs)
     return _wait_workflow(exec_id)

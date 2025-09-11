@@ -8,7 +8,7 @@ class Command(BaseCommand):
     help = 'Cancel a workflow execution and its queued activities.'
 
     def add_arguments(self, parser):
-        parser.add_argument('execution_id', help='WorkflowExecution UUID')
+        parser.add_argument('execution_id', help='WorkflowExecution ID')
         parser.add_argument(
             '--reason', default='', help='Optional cancellation reason (string)'
         )

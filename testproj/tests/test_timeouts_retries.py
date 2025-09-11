@@ -31,10 +31,9 @@ def read_workflow(exec_id):
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
-        norm_id = exec_id.replace('-', '')
         cur.execute(
             "SELECT status, result FROM django_durable_workflowexecution WHERE id=?",
-            (norm_id,),
+            (int(exec_id),),
         )
         row = cur.fetchone()
         assert row, f"Workflow not found: {exec_id}"
@@ -52,10 +51,9 @@ def read_activity_statuses(exec_id):
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
-        norm_id = exec_id.replace('-', '')
         cur.execute(
             "SELECT status FROM django_durable_activitytask WHERE execution_id=?",
-            (norm_id,),
+            (int(exec_id),),
         )
         return [r[0] for r in cur.fetchall()]
     finally:

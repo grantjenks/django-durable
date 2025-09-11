@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 MANAGE = str(ROOT / "manage.py")
@@ -31,10 +30,9 @@ def read_workflow(exec_id):
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
-        norm_id = exec_id.replace('-', '')
         cur.execute(
             "SELECT status, result FROM django_durable_workflowexecution WHERE id=?",
-            (norm_id,),
+            (int(exec_id),),
         )
         row = cur.fetchone()
         assert row, f"Workflow not found: {exec_id}"
@@ -52,16 +50,14 @@ def read_child(parent_id):
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
-        norm_parent = parent_id.replace('-', '')
         cur.execute(
             "SELECT id FROM django_durable_workflowexecution WHERE parent_id=?",
-            (norm_parent,),
+            (int(parent_id),),
         )
         row = cur.fetchone()
         assert row, "Child workflow not found"
-        child_id_hex = row[0]
-        child_id = str(uuid.UUID(child_id_hex))
-        return read_workflow(child_id)
+        child_id = row[0]
+        return read_workflow(str(child_id))
     finally:
         con.close()
 
@@ -70,14 +66,13 @@ def get_child_id(parent_id):
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
-        norm_parent = parent_id.replace('-', '')
         cur.execute(
             "SELECT id FROM django_durable_workflowexecution WHERE parent_id=?",
-            (norm_parent,),
+            (int(parent_id),),
         )
         row = cur.fetchone()
         assert row, "Child workflow not found"
-        return str(uuid.UUID(row[0]))
+        return str(row[0])
     finally:
         con.close()
 

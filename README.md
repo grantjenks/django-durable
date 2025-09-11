@@ -23,7 +23,7 @@ python manage.py durable_worker --batch 20 --tick 0.2 --procs 4
 - To send a signal from outside code:
 
 ```bash
-python manage.py durable_signal <execution_uuid> user_clicked --input '{"clicked": true}'
+python manage.py durable_signal <execution_id> user_clicked --input '{"clicked": true}'
 ```
 
 You can also send a signal programmatically:
@@ -38,7 +38,7 @@ signal_workflow(execution_id, "user_clicked", {"clicked": True})
 - Cancel a workflow via CLI:
 
 ```bash
-python manage.py durable_cancel <execution_uuid> --reason "user requested" [--keep-queued]
+python manage.py durable_cancel <execution_id> --reason "user requested" [--keep-queued]
 ```
 
 - In code:

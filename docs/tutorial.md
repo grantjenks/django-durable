@@ -123,7 +123,7 @@ def example_with_signal(ctx):
 Send a signal from the CLI or code:
 
 ```bash
-python manage.py durable_signal <execution_uuid> go --input '{"clicked": true}'
+   python manage.py durable_signal <execution_id> go --input '{"clicked": true}'
 ```
 
 ```python

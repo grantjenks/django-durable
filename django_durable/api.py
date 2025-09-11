@@ -1,33 +1,36 @@
+import time
 from typing import Any, Callable
 
-import time
-
+from .constants import ErrorCode
 from .engine import (
     _run_workflow,
     _start_workflow,
     cancel_workflow,
     signal_workflow,
 )
+from .exceptions import WaitWorkflowTimeout, WorkflowException, WorkflowTimeout
 from .models import WorkflowExecution
-from .exceptions import WorkflowException, WorkflowTimeout, WaitWorkflowTimeout
-from .constants import ErrorCode
 from .registry import register
 
 __all__ = [
-    "start_workflow",
-    "wait_workflow",
-    "run_workflow",
-    "signal_workflow",
-    "cancel_workflow",
-    "register",
+    'start_workflow',
+    'wait_workflow',
+    'run_workflow',
+    'signal_workflow',
+    'cancel_workflow',
+    'register',
 ]
 
-def start_workflow(workflow: str | Callable, timeout: float | None = None, **inputs) -> str:
+
+def start_workflow(
+    workflow: str | Callable, timeout: float | None = None, **inputs
+) -> str:
     """Create a workflow execution and return its handle (ID)."""
     return _start_workflow(workflow, timeout=timeout, **inputs)
 
+
 def wait_workflow(
-    execution: WorkflowExecution | str, timeout: float | None = None
+    execution: WorkflowExecution | int | str, timeout: float | None = None
 ) -> Any:
     """Wait for a workflow execution to complete and return its result.
 
@@ -52,23 +55,22 @@ def wait_workflow(
         if execution.status == WorkflowExecution.Status.COMPLETED:
             return execution.result
         if execution.status == WorkflowExecution.Status.FAILED:
-            raise WorkflowException(
-                execution.error or ErrorCode.ACTIVITY_FAILED.value
-            )
+            raise WorkflowException(execution.error or ErrorCode.ACTIVITY_FAILED.value)
         if execution.status == WorkflowExecution.Status.CANCELED:
             raise WorkflowException(
                 execution.error or ErrorCode.WORKFLOW_CANCELED.value
             )
         if execution.status == WorkflowExecution.Status.TIMED_OUT:
-            raise WorkflowTimeout(
-                execution.error or ErrorCode.WORKFLOW_TIMEOUT.value
-            )
+            raise WorkflowTimeout(execution.error or ErrorCode.WORKFLOW_TIMEOUT.value)
 
         if timeout == 0 or (deadline and time.monotonic() >= deadline):
             raise WaitWorkflowTimeout()
 
         time.sleep(1)
 
-def run_workflow(workflow: str | Callable, timeout: float | None = None, **inputs) -> Any:
+
+def run_workflow(
+    workflow: str | Callable, timeout: float | None = None, **inputs
+) -> Any:
     """Convenience helper: start a workflow and wait for its result."""
     return _run_workflow(workflow, timeout=timeout, **inputs)
