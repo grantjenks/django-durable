@@ -1,5 +1,3 @@
-import uuid
-
 from django.db import models
 from django.utils import timezone
 
@@ -14,7 +12,6 @@ class WorkflowExecution(models.Model):
         CANCELED = 'CANCELED'
         TIMED_OUT = 'TIMED_OUT'
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workflow_name = models.CharField(max_length=200)
     input = models.JSONField(default=dict, blank=True)
     status = models.CharField(
@@ -70,7 +67,6 @@ class ActivityTask(models.Model):
         FAILED = 'FAILED'
         TIMED_OUT = 'TIMED_OUT'
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     execution = models.ForeignKey(
         WorkflowExecution, related_name='activities', on_delete=models.CASCADE
     )

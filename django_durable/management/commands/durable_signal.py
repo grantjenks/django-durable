@@ -10,7 +10,7 @@ class Command(BaseCommand):
     help = 'Send a signal to a workflow execution.'
 
     def add_arguments(self, parser):
-        parser.add_argument('execution_id', help='WorkflowExecution UUID')
+        parser.add_argument('execution_id', help='WorkflowExecution ID')
         parser.add_argument('signal_name', help='Signal name')
         parser.add_argument(
             '--input',

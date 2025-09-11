@@ -11,7 +11,7 @@ This reference lists the public surface exposed by `django_durable` and commonly
 ```{autofunction} django_durable.api.start_workflow
 ```
 
- - Summary: Create a workflow execution and return its handle (UUID string).
+ - Summary: Create a workflow execution and return its handle (ID string).
  - Params: `workflow: str | Callable`, `timeout: float | None = None`, `**inputs`
  - Returns: `str` execution ID
  - Example:
@@ -27,7 +27,7 @@ This reference lists the public surface exposed by `django_durable` and commonly
 ```
 
 - Summary: Block until the workflow completes and return its result.
-- Params: `execution: WorkflowExecution | str`
+- Params: `execution: WorkflowExecution | int | str`
 - Returns: JSON-serializable result
 - Example:
 
@@ -47,7 +47,7 @@ result = wait_workflow(exec_id)
 ```
 
 - Summary: Enqueue an external signal for a workflow and mark it runnable.
-- Params: `execution: WorkflowExecution | str`, `name: str`, `payload: Any | None = None`
+- Params: `execution: WorkflowExecution | int | str`, `name: str`, `payload: Any | None = None`
 - Returns: `None`
 - Example:
 
@@ -60,7 +60,7 @@ signal_workflow(exec_id, "go", {"clicked": True})
 ```
 
 - Summary: Cancel a workflow execution and optionally fail queued activities.
-- Params: `execution: WorkflowExecution | str`, `reason: str | None = None`, `cancel_queued_activities: bool = True`
+- Params: `execution: WorkflowExecution | int | str`, `reason: str | None = None`, `cancel_queued_activities: bool = True`
 - Returns: `None`
 - Example:
 
@@ -148,7 +148,7 @@ def my_activity():
   - `--procs`: maximum concurrent subprocesses (default 4)
 
 - `durable_start WORKFLOW_NAME [--input JSON] [--timeout FLOAT]`
-  - Starts a workflow by name with optional JSON kwargs. Prints the execution UUID.
+   - Starts a workflow by name with optional JSON kwargs. Prints the execution ID.
 
 - `durable_signal EXECUTION_ID SIGNAL_NAME [--input JSON]`
   - Sends a signal to a workflow with an optional JSON payload.

@@ -30,10 +30,9 @@ def read_task(task_id: str):
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
-        norm_id = task_id.replace("-", "")
         cur.execute(
             "SELECT status, error FROM django_durable_activitytask WHERE id=?",
-            (norm_id,),
+            (int(task_id),),
         )
         return cur.fetchone()
     finally:
