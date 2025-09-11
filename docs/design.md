@@ -54,7 +54,7 @@ This document explains how and why Django Durable works the way it does.
 
 - Crashes during workflow replay: replay is idempotent; a `NeedsPause` control-flow exception indicates when to yield until new checkpoints exist.
 - Crashes during activity: the task remains RUNNING; heartbeat and schedule-to-close timeouts detect stalled tasks and retry or mark them timed out.
-- Cancellation: `cancel_workflow` sets status to CANCELED, records events, and (by default) fails queued activities to prevent later execution. Child workflows are canceled recursively.
+- Cancellation: `cancel_workflow` sets status to CANCELED, records events, and fails queued activities to prevent later execution. Child workflows and active activities are canceled automatically.
 - Versioning: `ctx.get_version`, `ctx.patched`, and `ctx.deprecate_patch` enable safe migration of workflow logic while preserving determinism for in-flight executions.
 
 ## Comparison Notes
