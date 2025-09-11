@@ -712,9 +712,8 @@ def activity_heartbeat(details: Any = None):
 def cancel_workflow(
     execution: WorkflowExecution | int | str,
     reason: str | None = None,
-    cancel_queued_activities: bool = True,
 ):
-    """Cancel a workflow execution and optionally cancel its queued activities.
+    """Cancel a workflow execution and fail its queued activities.
 
     - Sets workflow status to CANCELED if not terminal; records 'workflow_canceled' event.
     - Marks queued activities as FAILED with error 'workflow_canceled' to prevent execution.
@@ -745,22 +744,21 @@ def cancel_workflow(
         execution.finished_at = timezone.now()
         execution.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
 
-        if cancel_queued_activities:
-            now = timezone.now()
-            qs = ActivityTask.objects.select_for_update().filter(
-                execution=execution, status=ActivityTask.Status.QUEUED
+        now = timezone.now()
+        qs = ActivityTask.objects.select_for_update().filter(
+            execution=execution, status=ActivityTask.Status.QUEUED
+        )
+        for t in qs:
+            t.status = ActivityTask.Status.FAILED
+            t.error = ErrorCode.WORKFLOW_CANCELED.value
+            t.finished_at = now
+            t.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+            HistoryEvent.objects.create(
+                execution=execution,
+                type=HistoryEventType.ACTIVITY_FAILED.value,
+                pos=t.pos,
+                details={'error': ErrorCode.WORKFLOW_CANCELED.value},
             )
-            for t in qs:
-                t.status = ActivityTask.Status.FAILED
-                t.error = ErrorCode.WORKFLOW_CANCELED.value
-                t.finished_at = now
-                t.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
-                HistoryEvent.objects.create(
-                    execution=execution,
-                    type=HistoryEventType.ACTIVITY_FAILED.value,
-                    pos=t.pos,
-                    details={'error': ErrorCode.WORKFLOW_CANCELED.value},
-                )
 
         _notify_parent(
             execution,
@@ -778,7 +776,6 @@ def cancel_workflow(
         cancel_workflow(
             child,
             reason=reason or ErrorCode.PARENT_CANCELED.value,
-            cancel_queued_activities=cancel_queued_activities,
         )
 
 

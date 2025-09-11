@@ -38,7 +38,7 @@ signal_workflow(execution_id, "user_clicked", {"clicked": True})
 - Cancel a workflow via CLI:
 
 ```bash
-python manage.py durable_cancel <execution_id> --reason "user requested" [--keep-queued]
+python manage.py durable_cancel <execution_id> --reason "user requested"
 ```
 
 - In code:
@@ -48,7 +48,7 @@ from django_durable import cancel_workflow
 cancel_workflow(execution_id, reason="user requested")
 ```
 
-Cancellation moves the workflow to CANCELED and, by default, marks queued activities as failed so workers will not run them.
+Cancellation moves the workflow to CANCELED and marks queued activities as failed so workers will not run them. Pending and running activities are canceled automatically.
 
 ## Benchmark
 

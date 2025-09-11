@@ -59,8 +59,8 @@ signal_workflow(exec_id, "go", {"clicked": True})
 ```{autofunction} django_durable.api.cancel_workflow
 ```
 
-- Summary: Cancel a workflow execution and optionally fail queued activities.
-- Params: `execution: WorkflowExecution | int | str`, `reason: str | None = None`, `cancel_queued_activities: bool = True`
+- Summary: Cancel a workflow execution and fail queued activities. Pending and running activities cancel automatically.
+- Params: `execution: WorkflowExecution | int | str`, `reason: str | None = None`
 - Returns: `None`
 - Example:
 
@@ -153,8 +153,8 @@ def my_activity():
 - `durable_signal EXECUTION_ID SIGNAL_NAME [--input JSON]`
   - Sends a signal to a workflow with an optional JSON payload.
 
-- `durable_cancel EXECUTION_ID [--reason STR] [--keep-queued]`
-  - Cancels the workflow. By default, queued activities are failed to prevent execution.
+- `durable_cancel EXECUTION_ID [--reason STR]`
+  - Cancels the workflow and fails queued activities to prevent execution.
 
 ## Settings and Conventions
 
