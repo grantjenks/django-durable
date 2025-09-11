@@ -1,11 +1,9 @@
 import json
-from datetime import timedelta
 
 from django.core.management.base import BaseCommand, CommandError
-from django.utils import timezone
 
-from django_durable import register
-from django_durable.models import WorkflowExecution
+from django_durable import register, start_workflow
+from django_durable.exceptions import UnknownWorkflowError
 
 
 class Command(BaseCommand):
@@ -27,22 +25,12 @@ class Command(BaseCommand):
 
     def handle(self, *args, **opts):
         name = opts['workflow_name']
-        if name not in register.workflows:
+        data = json.loads(opts['input'])
+        timeout = opts['timeout']
+        try:
+            exec_id = start_workflow(name, timeout=timeout, **data)
+        except UnknownWorkflowError as exc:
             raise CommandError(
                 f"Unknown workflow '{name}'. Registered: {list(register.workflows)}"
-            )
-
-        data = json.loads(opts['input'])
-        fn = register.workflows[name]
-        timeout = opts['timeout']
-        if timeout is None:
-            timeout = getattr(fn, '_durable_timeout', None)
-        expires_at = (
-            timezone.now() + timedelta(seconds=float(timeout))
-            if timeout is not None
-            else None
-        )
-        wf = WorkflowExecution.objects.create(
-            workflow_name=name, input=data, expires_at=expires_at
-        )
-        self.stdout.write(self.style.SUCCESS(str(wf.id)))
+            ) from exc
+        self.stdout.write(self.style.SUCCESS(str(exec_id)))
