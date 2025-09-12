@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import time
+from datetime import timedelta
 from pathlib import Path
 
 import django
@@ -32,7 +33,7 @@ from django_durable.exceptions import (
     WorkflowException,
     WorkflowTimeout,
 )
-from django_durable.engine import Context
+from django_durable.engine import Context, NeedsPause
 from django_durable.models import ActivityTask, WorkflowExecution, HistoryEvent
 from django_durable.constants import HistoryEventType, ErrorCode
 from django_durable.management.commands.durable_worker import Command
@@ -213,6 +214,27 @@ def test_wait_activity_timeout_zero():
         ctx.wait_activity(1, timeout=0)
 
 
+def test_wait_activity_timeout_relative_to_history():
+    wf = WorkflowExecution.objects.create(workflow_name="wf")
+    HistoryEvent.objects.create(
+        execution=wf,
+        type=HistoryEventType.ACTIVITY_SCHEDULED.value,
+        pos=1,
+    )
+    ctx = Context(execution=wf)
+    with pytest.raises(NeedsPause):
+        ctx.wait_activity(1, timeout=5)
+    ev_wait = HistoryEvent.objects.get(
+        execution=wf,
+        type=HistoryEventType.ACTIVITY_WAIT.value,
+        pos=1,
+    )
+    ev_wait.created_at = timezone.now() - timedelta(seconds=10)
+    ev_wait.save(update_fields=["created_at"])
+    with pytest.raises(WaitActivityTimeout):
+        ctx.wait_activity(1, timeout=5)
+
+
 def test_wait_workflow_raises_workflowtimeout():
     wf = WorkflowExecution.objects.create(
         workflow_name="wf",
@@ -240,6 +262,29 @@ def test_ctx_wait_workflow_timeout_zero():
     ctx = Context(execution=parent)
     with pytest.raises(WaitWorkflowTimeout):
         ctx.wait_workflow(str(child.id), timeout=0)
+
+
+def test_wait_workflow_timeout_relative_to_history():
+    parent = WorkflowExecution.objects.create(workflow_name="parent")
+    child = WorkflowExecution.objects.create(workflow_name="child", parent=parent)
+    HistoryEvent.objects.create(
+        execution=parent,
+        type=HistoryEventType.CHILD_WORKFLOW_SCHEDULED.value,
+        details={"child_id": str(child.id)},
+    )
+    ctx = Context(execution=parent)
+    handle = str(child.id)
+    with pytest.raises(NeedsPause):
+        ctx.wait_workflow(handle, timeout=5)
+    ev_wait = HistoryEvent.objects.get(
+        execution=parent,
+        type=HistoryEventType.CHILD_WORKFLOW_WAIT.value,
+        details__child_id=handle,
+    )
+    ev_wait.created_at = timezone.now() - timedelta(seconds=10)
+    ev_wait.save(update_fields=["created_at"])
+    with pytest.raises(WaitWorkflowTimeout):
+        ctx.wait_workflow(handle, timeout=5)
 
 
 def test_activity_input_mismatch_raises_nondeterminism():

@@ -173,9 +173,6 @@ class Context:
     def wait_activity(self, handle: int, timeout: float | None = None) -> Any:
         """Wait for a previously started activity and return its result."""
         pos = handle
-        deadline = None
-        if timeout is not None:
-            deadline = timezone.now() + timedelta(seconds=float(timeout))
 
         ev_done = (
             HistoryEvent.objects.filter(
@@ -211,7 +208,26 @@ class Context:
         if not scheduled:
             raise RuntimeError(f'Unknown activity handle {handle}')
 
-        if timeout == 0 or (deadline and timezone.now() >= deadline):
+        ev_wait = (
+            HistoryEvent.objects.filter(
+                execution=self.execution,
+                pos=pos,
+                type=HistoryEventType.ACTIVITY_WAIT.value,
+            )
+            .order_by('id')
+            .last()
+        )
+        if not ev_wait:
+            ev_wait = HistoryEvent.objects.create(
+                execution=self.execution,
+                type=HistoryEventType.ACTIVITY_WAIT.value,
+                pos=pos,
+            )
+
+        deadline = None
+        if timeout is not None:
+            deadline = ev_wait.created_at + timedelta(seconds=float(timeout))
+        if deadline and timezone.now() >= deadline:
             raise WaitActivityTimeout()
 
         raise NeedsPause()
@@ -425,10 +441,6 @@ class Context:
 
     def wait_workflow(self, handle: str, timeout: float | None = None) -> Any:
         """Wait for a previously started child workflow."""
-        deadline = None
-        if timeout is not None:
-            deadline = timezone.now() + timedelta(seconds=float(timeout))
-
         ev_done = (
             HistoryEvent.objects.filter(
                 execution=self.execution,
@@ -465,7 +477,27 @@ class Context:
         if not scheduled:
             raise RuntimeError(f'Unknown workflow handle {handle}')
 
-        if timeout == 0 or (deadline and timezone.now() >= deadline):
+        ev_wait = (
+            HistoryEvent.objects.filter(
+                execution=self.execution,
+                type=HistoryEventType.CHILD_WORKFLOW_WAIT.value,
+                details__child_id=handle,
+            )
+            .order_by('id')
+            .last()
+        )
+        if not ev_wait:
+            ev_wait = HistoryEvent.objects.create(
+                execution=self.execution,
+                type=HistoryEventType.CHILD_WORKFLOW_WAIT.value,
+                pos=SPECIAL_EVENT_POS,
+                details={'child_id': handle},
+            )
+
+        deadline = None
+        if timeout is not None:
+            deadline = ev_wait.created_at + timedelta(seconds=float(timeout))
+        if deadline and timezone.now() >= deadline:
             raise WaitWorkflowTimeout()
 
         raise NeedsPause()
