@@ -1,7 +1,9 @@
 from enum import Enum
 
+from django.db import models
 
-class HistoryEventType(str, Enum):
+
+class HistoryEventType(models.TextChoices):
     VERSION_MARKER = 'version_marker'
     ACTIVITY_SCHEDULED = 'activity_scheduled'
     ACTIVITY_COMPLETED = 'activity_completed'

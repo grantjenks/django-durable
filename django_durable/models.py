@@ -1,6 +1,8 @@
 from django.db import models
 from django.utils import timezone
 
+from .constants import SPECIAL_EVENT_POS, HistoryEventType
+
 
 class WorkflowExecution(models.Model):
     class Status(models.TextChoices):
@@ -43,16 +45,25 @@ class HistoryEvent(models.Model):
     execution = models.ForeignKey(
         WorkflowExecution, related_name='history', on_delete=models.CASCADE
     )
-    type = models.CharField(max_length=64)
+    type = models.CharField(max_length=64, choices=HistoryEventType.choices)
     pos = models.IntegerField(
         default=0
     )  # deterministic call index within workflow replay
     details = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    def __str__(self):
+        return f"{self.execution_id}:{self.pos}:{self.type}"
+
     class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['execution', 'pos', 'type'],
+                condition=~models.Q(pos=SPECIAL_EVENT_POS),
+                name='historyevent_execution_pos_type_unique',
+            )
+        ]
         indexes = [
-            models.Index(fields=['execution', 'pos']),
             models.Index(fields=['execution', 'type']),
             models.Index(fields=['execution', 'pos', 'type']),
             models.Index(fields=['execution', 'type', 'id']),
@@ -90,6 +101,9 @@ class ActivityTask(models.Model):
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.activity_name}:{self.execution_id}:{self.pos}"
 
     class Meta:
         indexes = [
