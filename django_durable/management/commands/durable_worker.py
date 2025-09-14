@@ -6,7 +6,7 @@ from datetime import timedelta
 from datetime import timedelta as _td
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import DatabaseError, close_old_connections
+from django.db import DatabaseError, IntegrityError, close_old_connections
 from django.utils import timezone
 
 from django_durable.constants import SPECIAL_EVENT_POS, ErrorCode, HistoryEventType
@@ -257,12 +257,18 @@ class Command(BaseCommand):
                                     'updated_at',
                                 ]
                             )
-                            HistoryEvent.objects.create(
-                                execution=task.execution,
-                                type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
-                                pos=task.pos,
-                                details={'error': ErrorCode.HEARTBEAT_TIMEOUT.value},
-                            )
+                            try:
+                                HistoryEvent.objects.create(
+                                    execution=task.execution,
+                                    type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
+                                    pos=task.pos,
+                                    details={
+                                        'error': ErrorCode.HEARTBEAT_TIMEOUT.value
+                                    },
+                                )
+                            except IntegrityError:
+                                # Event already recorded by another worker iteration
+                                pass
                             WorkflowExecution.objects.filter(
                                 pk=task.execution_id,
                                 status__in=[

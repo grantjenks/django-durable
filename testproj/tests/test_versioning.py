@@ -74,6 +74,42 @@ def test_get_version_survives_code_change():
     assert exec2.result == "v2"
 
 
+def test_patched_allows_old_and_new_paths():
+    register.workflows.pop(f"{__name__}.patch_flow", None)
+
+    @register.workflow()
+    def patch_flow(ctx):
+        res = ctx.run_activity(echo, "old")
+        ctx.wait_signal("go")
+        return res["value"]
+
+    exec1 = WorkflowExecution.objects.create(workflow_name=patch_flow._durable_name, input={})
+    _step_to_waiting(exec1)
+
+    register.workflows.pop(f"{__name__}.patch_flow", None)
+
+    @register.workflow()
+    def patch_flow(ctx):
+        if ctx.patched("feat"):
+            res = ctx.run_activity(echo, "new")
+        else:
+            res = ctx.run_activity(echo, "old")
+        ctx.wait_signal("go")
+        return res["value"]
+
+    signal_workflow(exec1, "go")
+    call_command("durable_internal_step_workflow", str(exec1.id))
+    exec1.refresh_from_db()
+    assert exec1.result == "old"
+
+    exec2 = WorkflowExecution.objects.create(workflow_name=patch_flow._durable_name, input={})
+    _step_to_waiting(exec2)
+    signal_workflow(exec2, "go")
+    call_command("durable_internal_step_workflow", str(exec2.id))
+    exec2.refresh_from_db()
+    assert exec2.result == "new"
+
+
 def test_patch_deprecation_allows_removal():
     register.workflows.pop(f"{__name__}.patch_flow", None)
 
