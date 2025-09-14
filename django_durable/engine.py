@@ -17,6 +17,7 @@ from .constants import (
 )
 from .exceptions import (
     ActivityError,
+    ActivityCanceled,
     ActivityTimeout,
     NondeterminismError,
     UnknownActivityError,
@@ -24,6 +25,7 @@ from .exceptions import (
     WaitActivityTimeout,
     WaitWorkflowTimeout,
     WorkflowException,
+    WorkflowCanceled,
     WorkflowTimeout,
 )
 from .models import ActivityTask, HistoryEvent, WorkflowExecution
@@ -240,7 +242,7 @@ class Context:
                 raise ActivityTimeout(err)
             if ev_done.type == HistoryEventType.ACTIVITY_CANCELED.value:
                 err = ev_done.details.get('error', ErrorCode.WORKFLOW_CANCELED.value)
-                raise ActivityError(RuntimeError(err))
+                raise ActivityCanceled(err)
             return ev_done.details.get('result')
 
         scheduled = HistoryEvent.objects.filter(
@@ -506,7 +508,7 @@ class Context:
                 raise WorkflowException(err)
             if ev_done.type == HistoryEventType.CHILD_WORKFLOW_CANCELED.value:
                 err = ev_done.details.get('error', ErrorCode.WORKFLOW_CANCELED.value)
-                raise WorkflowException(err)
+                raise WorkflowCanceled(err)
             if ev_done.type == HistoryEventType.CHILD_WORKFLOW_TIMED_OUT.value:
                 err = ev_done.details.get('error', ErrorCode.WORKFLOW_TIMEOUT.value)
                 raise WorkflowTimeout(err)
@@ -951,6 +953,10 @@ def _run_loop(execution: WorkflowExecution, tick: float = 0.01):
 
     if execution.status == WorkflowExecution.Status.COMPLETED:
         return execution.result
+    if execution.status == WorkflowExecution.Status.CANCELED:
+        raise WorkflowCanceled(
+            execution.error or ErrorCode.WORKFLOW_CANCELED.value
+        )
     if execution.status == WorkflowExecution.Status.TIMED_OUT:
         raise WorkflowTimeout(execution.error or ErrorCode.WORKFLOW_TIMEOUT.value)
     raise WorkflowException(execution.error or execution.status)
