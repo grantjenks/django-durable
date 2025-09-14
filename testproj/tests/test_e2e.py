@@ -8,6 +8,8 @@ from typing import Any
 
 import pytest
 import sqlite3
+from django_durable.engine import step_workflow
+from django_durable.models import WorkflowExecution
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -106,7 +108,7 @@ def test_cancel_marks_workflow_and_tasks(tmp_path):
     exec_id = out.splitlines()[-1].strip()
 
     # Step once to schedule first activity but not execute it
-    run_manage("durable_internal_step_workflow", exec_id)
+    step_workflow(WorkflowExecution.objects.get(id=exec_id))
 
     # Cancel
     run_manage("durable_cancel", exec_id, "--reason", "test")

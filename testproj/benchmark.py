@@ -133,14 +133,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1].startswith("durable_internal"):
+    if len(sys.argv) > 1 and sys.argv[1] == "durable_worker":
         os.environ.setdefault("DJANGO_SETTINGS_MODULE", "testproj.settings")
         sys.path.append(os.path.dirname(os.path.dirname(__file__)))
         import django
         django.setup()
         from django.core.management import call_command
 
-        call_command(sys.argv[1], *sys.argv[2:])
+        call_command("durable_worker", *sys.argv[2:])
     else:
         main()
 

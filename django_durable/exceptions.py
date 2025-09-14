@@ -18,6 +18,10 @@ class NondeterminismError(WorkflowException):
     """Event history does not line up during step/replay of a workflow."""
 
 
+class WorkflowCanceled(WorkflowException):
+    """Occurs when a workflow is canceled."""
+
+
 class UnknownWorkflowError(WorkflowException):
     """Occurs when the workflow name is not registered."""
 
@@ -52,3 +56,7 @@ class ActivityError(ActivityException):
     def __init__(self, error: Exception):
         self.error = error
         super().__init__(str(error))
+
+
+class ActivityCanceled(ActivityException):
+    """Occurs when an activity is canceled."""

@@ -25,15 +25,17 @@ from django_durable import (
     register,
 )
 from django_durable.exceptions import (
+    ActivityCanceled,
     ActivityError,
     ActivityTimeout,
     NondeterminismError,
     WaitActivityTimeout,
     WaitWorkflowTimeout,
+    WorkflowCanceled,
     WorkflowException,
     WorkflowTimeout,
 )
-from django_durable.engine import Context, NeedsPause
+from django_durable.engine import Context, NeedsPause, execute_activity, step_workflow
 from django_durable.models import ActivityTask, WorkflowExecution, HistoryEvent
 from django_durable.constants import HistoryEventType, ErrorCode
 from django_durable.management.commands.durable_worker import Command
@@ -68,14 +70,14 @@ def _run_until_complete(execution):
             ).values_list("id", flat=True)
         )
         for tid in task_ids:
-            call_command("durable_internal_run_activity", str(tid))
+            execute_activity(ActivityTask.objects.get(id=tid))
         wf_ids = list(
             WorkflowExecution.objects.filter(
                 status=WorkflowExecution.Status.PENDING
             ).values_list("id", flat=True)
         )
         for wid in wf_ids:
-            call_command("durable_internal_step_workflow", str(wid))
+            step_workflow(WorkflowExecution.objects.get(id=wid))
         execution.refresh_from_db()
         if execution.status in terminal:
             break
@@ -311,7 +313,7 @@ def test_cancel_workflow_programmatically():
 
     handle = start_workflow(cancel_flow)
     wf = WorkflowExecution.objects.get(pk=handle)
-    call_command("durable_internal_step_workflow", str(wf.id))
+    step_workflow(wf)
 
     cancel_workflow(handle, reason="test")
 
@@ -326,7 +328,7 @@ def test_cancel_activity_via_context():
     def cancel_act(ctx):
         h = ctx.start_activity(add, 1, 2)
         ctx.cancel_activity(h)
-        with pytest.raises(ActivityError):
+        with pytest.raises(ActivityCanceled):
             ctx.wait_activity(h)
         return {"canceled": True}
 
@@ -348,7 +350,7 @@ def test_cancel_child_workflow_via_context():
     def parent_cancel_child(ctx):
         handle = ctx.start_workflow(child_to_cancel._durable_name)
         ctx.cancel_workflow(handle)
-        with pytest.raises(WorkflowException):
+        with pytest.raises(WorkflowCanceled):
             ctx.wait_workflow(handle)
         return {"canceled": True}
 
