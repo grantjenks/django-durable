@@ -78,14 +78,57 @@ class Context:
         return version
 
     def patched(self, change_id: str) -> bool:
-        """Convenience wrapper for feature flags that may be removed later.
+        """Return whether to take the new code path for a given change.
 
-        Uses ``get_version`` under the hood to record a patch marker so that
-        once all executions have moved past the old code path the patch can be
-        safely removed while preserving determinism.
+        Temporal's ``Workflow.patched`` helper evaluates to ``True`` only for
+        workflows that have not previously executed beyond the patched
+        location.  Existing executions that have already progressed past the
+        patched section will receive ``False`` on replay so that they continue
+        the old logic.
+
+        This method mirrors that behaviour by recording a version marker the
+        first time it is reached.  If the workflow history already contains
+        events beyond the current call position, we treat the execution as
+        replaying and return ``False`` while recording version ``0``.  New
+        executions record version ``1`` and return ``True``.
         """
 
-        return self.get_version(f'patch:{change_id}', 1) >= 1
+        ev = (
+            HistoryEvent.objects.filter(
+                execution=self.execution,
+                pos=self.pos,
+                type=HistoryEventType.VERSION_MARKER.value,
+            )
+            .order_by('id')
+            .last()
+        )
+        if ev:
+            self.pos += 1
+            return ev.details.get('version', 0) >= 1
+
+        # If there are existing events at or beyond the current position (other
+        # than the workflow start), this execution has already advanced past
+        # the patched section and should continue the old code path without
+        # consuming a new position.
+        has_current = HistoryEvent.objects.filter(
+            execution=self.execution,
+            pos=self.pos,
+        ).exclude(type=HistoryEventType.WORKFLOW_STARTED.value)
+        has_future = HistoryEvent.objects.filter(
+            execution=self.execution,
+            pos__gt=self.pos,
+        )
+        if has_current.exists() or has_future.exists():
+            return False
+
+        pos = self._bump()
+        HistoryEvent.objects.create(
+            execution=self.execution,
+            type=HistoryEventType.VERSION_MARKER.value,
+            pos=pos,
+            details={'change_id': f'patch:{change_id}', 'version': 1},
+        )
+        return True
 
     def deprecate_patch(self, change_id: str):
         """Record that a previously patched section has been removed.
@@ -818,7 +861,7 @@ def signal_workflow(
         HistoryEvent.objects.create(
             execution=execution,
             type=HistoryEventType.SIGNAL_ENQUEUED.value,
-            pos=0,
+            pos=SPECIAL_EVENT_POS,
             details={'name': name, 'payload': payload},
         )
         if execution.status not in (

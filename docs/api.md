@@ -123,7 +123,9 @@ Each workflow function receives `ctx`, which exposes deterministic APIs used dur
 - `ctx.wait_workflow(handle: str, timeout: float | None = None) -> Any`: wait for a child workflow by handle.
 - Versioning helpers:
   - `ctx.get_version(change_id: str, version: int) -> int`
-  - `ctx.patched(change_id: str) -> bool`
+  - `ctx.patched(change_id: str) -> bool`: returns `True` for new executions and
+    `False` for workflows that already progressed beyond the patched location,
+    enabling `if`/`else` branches for rolling out changes.
   - `ctx.deprecate_patch(change_id: str) -> None`
 
 These methods are deterministic: on replay, they consult the `HistoryEvent` log to return prior results.
