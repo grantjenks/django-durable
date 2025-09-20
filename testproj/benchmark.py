@@ -78,7 +78,7 @@ def run_benchmark(tasks: int, concurrency: int, payload_size: int):
     payload = "x" * payload_size
     start = time.perf_counter()
     for _ in range(tasks):
-        start_workflow("testproj.bench_flow", payload=payload)
+        start_workflow("__main__.bench_flow", payload=payload)
     _wait_until_done(ActivityTask, WorkflowExecution)
     elapsed = time.perf_counter() - start
 
@@ -88,7 +88,7 @@ def run_benchmark(tasks: int, concurrency: int, payload_size: int):
 
     durations = [
         (t.finished_at - t.started_at).total_seconds()
-        for t in ActivityTask.objects.filter(activity_name="testproj.bench_activity")
+        for t in ActivityTask.objects.filter(activity_name="__main__.bench_activity")
     ]
     durations.sort()
     p50 = durations[len(durations) // 2]
@@ -118,7 +118,7 @@ def main() -> None:
 
     @register.workflow()
     def bench_flow(ctx, payload: str) -> dict:  # type: ignore[no-untyped-def]
-        ctx.run_activity("testproj.bench_activity", payload)
+        ctx.run_activity("__main__.bench_activity", payload)
         return {}
 
     call_command("migrate", verbosity=0, interactive=False)
