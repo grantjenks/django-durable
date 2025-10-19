@@ -159,6 +159,11 @@ class Command(BaseCommand):
         close_old_connections()
         return proc
 
+    def _respawn_follower(self, idle, max_tasks):
+        proc = self._spawn_follower_proc(max_tasks)
+        idle.append(proc)
+        return proc
+
     def _run_follower(self, max_tasks: int):
         """Run follower mode: execute tasks from stdin and ack on stdout."""
         close_old_connections()
@@ -196,415 +201,15 @@ class Command(BaseCommand):
                 now = timezone.now()
                 progressed = False
 
-                for proc in list(idle):
-                    if proc.poll() is not None:
-                        idle.remove(proc)
-                        idle.append(self._spawn_follower_proc(max_tasks))
-                        progressed = True
-
-                if running:
-                    rlist = [info['proc'].stdout for info in running]
-                    ready, _, _ = select.select(rlist, [], [], 0)
-                    for r in ready:
-                        for info in list(running):
-                            if info['proc'].stdout is r:
-                                r.readline()
-                                running.remove(info)
-                                idle.append(info['proc'])
-                                progressed = True
-                                break
-
-                for info in list(running):
-                    proc = info['proc']
-                    if proc.poll() is not None:
-                        running.remove(info)
-                        idle.append(self._spawn_follower_proc(max_tasks))
-                        progressed = True
-                        continue
-                    deadline = info.get('deadline')
-                    if deadline is not None and now >= deadline:
-                        proc.kill()
-                        proc.wait()
-                        if info['type'] == 'activity':
-                            try:
-                                task = ActivityTask.objects.get(id=info['id'])
-                                self._timeout_activity(task)
-                            except ActivityTask.DoesNotExist:
-                                pass
-                        else:
-                            try:
-                                wf = WorkflowExecution.objects.get(id=info['id'])
-                                self._timeout_workflow(wf)
-                            except WorkflowExecution.DoesNotExist:
-                                pass
-                        running.remove(info)
-                        idle.append(self._spawn_follower_proc(max_tasks))
-                        progressed = True
-                        continue
-
-                    if info['type'] == 'activity':
-                        try:
-                            task = ActivityTask.objects.select_related('execution').get(id=info['id'])
-                        except ActivityTask.DoesNotExist:
-                            running.remove(info)
-                            idle.append(self._spawn_follower_proc(max_tasks))
-                            progressed = True
-                            continue
-                        if task.execution.status == WorkflowExecution.Status.CANCELED:
-                            proc.kill()
-                            proc.wait()
-                            self._cancel_activity(task)
-                            running.remove(info)
-                            idle.append(self._spawn_follower_proc(max_tasks))
-                            progressed = True
-                    else:
-                        try:
-                            wf = WorkflowExecution.objects.select_related('parent').get(id=info['id'])
-                        except WorkflowExecution.DoesNotExist:
-                            running.remove(info)
-                            idle.append(self._spawn_follower_proc(max_tasks))
-                            progressed = True
-                            continue
-                        parent_canceled = (
-                            wf.parent_id
-                            and WorkflowExecution.objects.filter(
-                                id=wf.parent_id,
-                                status=WorkflowExecution.Status.CANCELED,
-                            ).exists()
-                        )
-                        if wf.status == WorkflowExecution.Status.CANCELED or parent_canceled:
-                            proc.kill()
-                            proc.wait()
-                            running.remove(info)
-                            idle.append(self._spawn_follower_proc(max_tasks))
-                            progressed = True
-
-                # 0) Timeout queued activities
-                timed_ids = list(
-                    ActivityTask.objects.filter(
-                        status=ActivityTask.Status.QUEUED,
-                        expires_at__isnull=False,
-                        expires_at__lte=now,
-                    ).values_list('id', flat=True)[:batch]
+                progressed |= self._refresh_idle_processes(idle, running, max_tasks)
+                progressed |= self._handle_running_processes(running, idle, max_tasks, now)
+                progressed |= self._process_timeouts(now, batch)
+                progressed |= self._dispatch_due_activities(
+                    now, batch, idle, running, max_tasks
                 )
-                if timed_ids:
-                    progressed = True
-                for tid in timed_ids:
-                    try:
-                        task = ActivityTask.objects.get(id=tid)
-                    except ActivityTask.DoesNotExist:
-                        continue
-                    task.error = ErrorCode.ACTIVITY_TIMEOUT.value
-                    policy = task.retry_policy or {}
-                    max_attempts = policy.get('maximum_attempts', 0)
-                    curr_attempt = task.attempt or 0
-                    should_retry = curr_attempt > 0 and (
-                        max_attempts == 0 or curr_attempt < max_attempts
-                    )
-                    if should_retry:
-                        interval = compute_backoff(policy, curr_attempt + 1)
-                        task.after_time = timezone.now() + _td(seconds=interval)
-                        task.save(update_fields=['error', 'after_time', 'updated_at'])
-                    else:
-                        task.status = ActivityTask.Status.TIMED_OUT
-                        task.finished_at = now
-                        task.save(
-                            update_fields=[
-                                'status',
-                                'error',
-                                'finished_at',
-                                'updated_at',
-                            ]
-                        )
-                        HistoryEvent.objects.create(
-                            execution=task.execution,
-                            type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
-                            pos=task.pos,
-                            details={'error': ErrorCode.ACTIVITY_TIMEOUT.value},
-                        )
-                        WorkflowExecution.objects.filter(
-                            pk=task.execution_id,
-                            status__in=[
-                                WorkflowExecution.Status.PENDING,
-                                WorkflowExecution.Status.RUNNING,
-                            ],
-                        ).update(status=WorkflowExecution.Status.PENDING)
-
-                # 0b) Timeout workflows
-                wf_timeouts = list(
-                    WorkflowExecution.objects.filter(
-                        status__in=[
-                            WorkflowExecution.Status.PENDING,
-                            WorkflowExecution.Status.RUNNING,
-                        ],
-                        expires_at__isnull=False,
-                        expires_at__lte=now,
-                    ).values_list('id', flat=True)[:batch]
+                progressed |= self._dispatch_runnable_workflows(
+                    now, batch, idle, running, max_tasks
                 )
-                if wf_timeouts:
-                    progressed = True
-                for wid in wf_timeouts:
-                    try:
-                        wf = WorkflowExecution.objects.get(id=wid)
-                    except WorkflowExecution.DoesNotExist:
-                        continue
-                    self._timeout_workflow(wf)
-
-                # 0c) Heartbeat timeouts for running activities
-                hb_ids = list(
-                    ActivityTask.objects.filter(
-                        status=ActivityTask.Status.RUNNING,
-                        heartbeat_timeout__isnull=False,
-                    ).values_list('id', flat=True)[:batch]
-                )
-                if hb_ids:
-                    progressed = True
-                for tid in hb_ids:
-                    try:
-                        task = ActivityTask.objects.get(id=tid)
-                    except ActivityTask.DoesNotExist:
-                        continue
-                    hb_at = task.heartbeat_at or task.started_at or now
-                    if (
-                        task.heartbeat_timeout is not None
-                        and hb_at + timedelta(seconds=float(task.heartbeat_timeout))
-                        <= now
-                    ):
-                        task.error = ErrorCode.HEARTBEAT_TIMEOUT.value
-                        policy = task.retry_policy or {}
-                        max_attempts = policy.get('maximum_attempts', 0)
-                        curr_attempt = task.attempt or 1
-                        should_retry = max_attempts == 0 or curr_attempt < max_attempts
-                        if should_retry:
-                            interval = compute_backoff(policy, curr_attempt)
-                            task.status = ActivityTask.Status.QUEUED
-                            task.after_time = timezone.now() + _td(seconds=interval)
-                            task.save(
-                                update_fields=[
-                                    'status',
-                                    'error',
-                                    'after_time',
-                                    'updated_at',
-                                ]
-                            )
-                        else:
-                            task.status = ActivityTask.Status.TIMED_OUT
-                            task.finished_at = now
-                            task.save(
-                                update_fields=[
-                                    'status',
-                                    'error',
-                                    'finished_at',
-                                    'updated_at',
-                                ]
-                            )
-                            try:
-                                HistoryEvent.objects.create(
-                                    execution=task.execution,
-                                    type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
-                                    pos=task.pos,
-                                    details={
-                                        'error': ErrorCode.HEARTBEAT_TIMEOUT.value
-                                    },
-                                )
-                            except IntegrityError:
-                                # Event already recorded by another worker iteration
-                                pass
-                            wf = task.execution
-                            HistoryEvent.objects.create(
-                                execution=wf,
-                                type=HistoryEventType.WORKFLOW_FAILED.value,
-                                pos=SPECIAL_EVENT_POS,
-                                details={'error': ErrorCode.HEARTBEAT_TIMEOUT.value},
-                            )
-                            wf.status = WorkflowExecution.Status.FAILED
-                            wf.error = ErrorCode.HEARTBEAT_TIMEOUT.value
-                            wf.finished_at = now
-                            wf.save(
-                                update_fields=['status', 'error', 'finished_at', 'updated_at']
-                            )
-                            _notify_parent(
-                                wf,
-                                HistoryEventType.CHILD_WORKFLOW_FAILED.value,
-                                {
-                                    'error': ErrorCode.HEARTBEAT_TIMEOUT.value
-                                },
-                            )
-
-                # 0d) Schedule-to-close timeouts for running activities
-                sc_ids = list(
-                    ActivityTask.objects.filter(
-                        status=ActivityTask.Status.RUNNING,
-                        expires_at__isnull=False,
-                        expires_at__lte=now,
-                    ).values_list('id', flat=True)[:batch]
-                )
-                if sc_ids:
-                    progressed = True
-                for tid in sc_ids:
-                    try:
-                        task = ActivityTask.objects.get(id=tid)
-                    except ActivityTask.DoesNotExist:
-                        continue
-                    task.error = ErrorCode.ACTIVITY_TIMEOUT.value
-                    policy = task.retry_policy or {}
-                    max_attempts = policy.get('maximum_attempts', 0)
-                    curr_attempt = task.attempt or 1
-                    should_retry = max_attempts == 0 or curr_attempt < max_attempts
-                    if should_retry:
-                        interval = compute_backoff(policy, curr_attempt)
-                        task.status = ActivityTask.Status.QUEUED
-                        task.after_time = timezone.now() + _td(seconds=interval)
-                        task.save(
-                            update_fields=[
-                                'status',
-                                'error',
-                                'after_time',
-                                'updated_at',
-                            ]
-                        )
-                    else:
-                        task.status = ActivityTask.Status.TIMED_OUT
-                        task.finished_at = now
-                        task.save(
-                            update_fields=[
-                                'status',
-                                'error',
-                                'finished_at',
-                                'updated_at',
-                            ]
-                        )
-                        HistoryEvent.objects.create(
-                            execution=task.execution,
-                            type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
-                            pos=task.pos,
-                            details={'error': ErrorCode.ACTIVITY_TIMEOUT.value},
-                        )
-                        WorkflowExecution.objects.filter(
-                            pk=task.execution_id,
-                            status__in=[
-                                WorkflowExecution.Status.PENDING,
-                                WorkflowExecution.Status.RUNNING,
-                            ],
-                        ).update(status=WorkflowExecution.Status.PENDING)
-
-                # 1) Run due activities
-                slots = len(idle)
-                if slots > 0:
-                    due_ids = list(
-                        ActivityTask.objects.filter(
-                            status=ActivityTask.Status.QUEUED,
-                            after_time__lte=now,
-                            execution__status__in=[
-                                WorkflowExecution.Status.PENDING,
-                                WorkflowExecution.Status.RUNNING,
-                            ],
-                        )
-                        .order_by('updated_at')
-                        .values_list('id', flat=True)[: min(batch, slots)]
-                    )
-                else:
-                    due_ids = []
-                if due_ids:
-                    progressed = True
-                for tid in due_ids:
-                    if not idle:
-                        break
-                    proc = idle.pop(0)
-                    claimed = ActivityTask.objects.filter(
-                        id=tid,
-                        status=ActivityTask.Status.QUEUED,
-                        after_time__lte=now,
-                    ).update(status=ActivityTask.Status.RUNNING)
-                    if not claimed:
-                        idle.append(proc)
-                        continue
-                    try:
-                        task = ActivityTask.objects.get(id=tid)
-                    except DatabaseError:
-                        ActivityTask.objects.filter(id=tid).update(
-                            status=ActivityTask.Status.QUEUED
-                        )
-                        idle.append(proc)
-                        continue
-                    timeout = None
-                    if task.expires_at is not None:
-                        timeout = max(
-                            0.0,
-                            (task.expires_at - timezone.now()).total_seconds(),
-                        )
-                    msg = json.dumps({'cmd': 'activity', 'id': tid}) + '\n'
-                    try:
-                        proc.stdin.write(msg)
-                        proc.stdin.flush()
-                    except Exception:
-                        ActivityTask.objects.filter(id=tid).update(
-                            status=ActivityTask.Status.QUEUED
-                        )
-                        idle.append(self._spawn_follower_proc(max_tasks))
-                        continue
-                    deadline = (
-                        timezone.now() + _td(seconds=timeout)
-                        if timeout is not None
-                        else None
-                    )
-                    running.append(
-                        {
-                            'type': 'activity',
-                            'id': tid,
-                            'proc': proc,
-                            'deadline': deadline,
-                        }
-                    )
-
-                # 2) Advance workflows
-                if idle:
-                    runnable_ids = list(
-                        WorkflowExecution.objects.filter(
-                            status=WorkflowExecution.Status.PENDING
-                        )
-                        .order_by('updated_at')
-                        .values_list('id', flat=True)[: min(batch, len(idle))]
-                    )
-                else:
-                    runnable_ids = []
-                if runnable_ids:
-                    progressed = True
-                for wid in runnable_ids:
-                    if not idle:
-                        break
-                    proc = idle.pop(0)
-                    try:
-                        wf = WorkflowExecution.objects.get(id=wid)
-                    except DatabaseError:
-                        idle.append(proc)
-                        continue
-                    timeout = None
-                    if wf.expires_at is not None:
-                        timeout = max(
-                            0.0,
-                            (wf.expires_at - timezone.now()).total_seconds(),
-                        )
-                    msg = json.dumps({'cmd': 'workflow', 'id': wid}) + '\n'
-                    try:
-                        proc.stdin.write(msg)
-                        proc.stdin.flush()
-                    except Exception:
-                        idle.append(self._spawn_follower_proc(max_tasks))
-                        continue
-                    deadline = (
-                        timezone.now() + _td(seconds=timeout)
-                        if timeout is not None
-                        else None
-                    )
-                    running.append(
-                        {
-                            'type': 'workflow',
-                            'id': wid,
-                            'proc': proc,
-                            'deadline': deadline,
-                        }
-                    )
 
                 loops += 1
                 if iterations is not None and loops >= iterations and not running:
@@ -613,6 +218,441 @@ class Command(BaseCommand):
                     time.sleep(tick)
         finally:
             close_old_connections()
+
+    def _refresh_idle_processes(self, idle, running, max_tasks):
+        progressed = False
+        for proc in list(idle):
+            if proc.poll() is not None:
+                idle.remove(proc)
+                self._respawn_follower(idle, max_tasks)
+                progressed = True
+
+        if running:
+            rlist = [info['proc'].stdout for info in running]
+            ready, _, _ = select.select(rlist, [], [], 0)
+            for r in ready:
+                for info in list(running):
+                    if info['proc'].stdout is r:
+                        r.readline()
+                        running.remove(info)
+                        idle.append(info['proc'])
+                        progressed = True
+                        break
+        return progressed
+
+    def _handle_running_processes(self, running, idle, max_tasks, now):
+        progressed = False
+        for info in list(running):
+            proc = info['proc']
+            if proc.poll() is not None:
+                running.remove(info)
+                self._respawn_follower(idle, max_tasks)
+                progressed = True
+                continue
+            deadline = info.get('deadline')
+            if deadline is not None and now >= deadline:
+                self._terminate_timed_out_process(proc, info)
+                running.remove(info)
+                self._respawn_follower(idle, max_tasks)
+                progressed = True
+                continue
+
+            if info['type'] == 'activity':
+                progressed |= self._check_running_activity(proc, info, running, idle, max_tasks)
+            else:
+                progressed |= self._check_running_workflow(proc, info, running, idle, max_tasks)
+        return progressed
+
+    def _terminate_timed_out_process(self, proc, info):
+        proc.kill()
+        proc.wait()
+        if info['type'] == 'activity':
+            try:
+                task = ActivityTask.objects.get(id=info['id'])
+                self._timeout_activity(task)
+            except ActivityTask.DoesNotExist:
+                pass
+        else:
+            try:
+                wf = WorkflowExecution.objects.get(id=info['id'])
+                self._timeout_workflow(wf)
+            except WorkflowExecution.DoesNotExist:
+                pass
+
+    def _check_running_activity(self, proc, info, running, idle, max_tasks):
+        try:
+            task = ActivityTask.objects.select_related('execution').get(id=info['id'])
+        except ActivityTask.DoesNotExist:
+            running.remove(info)
+            self._respawn_follower(idle, max_tasks)
+            return True
+        if task.execution.status == WorkflowExecution.Status.CANCELED:
+            proc.kill()
+            proc.wait()
+            self._cancel_activity(task)
+            running.remove(info)
+            self._respawn_follower(idle, max_tasks)
+            return True
+        return False
+
+    def _check_running_workflow(self, proc, info, running, idle, max_tasks):
+        try:
+            wf = WorkflowExecution.objects.select_related('parent').get(id=info['id'])
+        except WorkflowExecution.DoesNotExist:
+            running.remove(info)
+            self._respawn_follower(idle, max_tasks)
+            return True
+        parent_canceled = (
+            wf.parent_id
+            and WorkflowExecution.objects.filter(
+                id=wf.parent_id,
+                status=WorkflowExecution.Status.CANCELED,
+            ).exists()
+        )
+        if wf.status == WorkflowExecution.Status.CANCELED or parent_canceled:
+            proc.kill()
+            proc.wait()
+            running.remove(info)
+            self._respawn_follower(idle, max_tasks)
+            return True
+        return False
+
+    def _process_timeouts(self, now, batch):
+        progressed = False
+        progressed |= self._timeout_queued_activities(now, batch)
+        progressed |= self._timeout_workflows(now, batch)
+        progressed |= self._heartbeat_timeouts(now, batch)
+        progressed |= self._schedule_to_close_timeouts(now, batch)
+        return progressed
+
+    def _timeout_queued_activities(self, now, batch):
+        timed_ids = list(
+            ActivityTask.objects.filter(
+                status=ActivityTask.Status.QUEUED,
+                expires_at__isnull=False,
+                expires_at__lte=now,
+            ).values_list('id', flat=True)[:batch]
+        )
+        if not timed_ids:
+            return False
+        for tid in timed_ids:
+            try:
+                task = ActivityTask.objects.get(id=tid)
+            except ActivityTask.DoesNotExist:
+                continue
+            task.error = ErrorCode.ACTIVITY_TIMEOUT.value
+            policy = task.retry_policy or {}
+            max_attempts = policy.get('maximum_attempts', 0)
+            curr_attempt = task.attempt or 0
+            should_retry = curr_attempt > 0 and (
+                max_attempts == 0 or curr_attempt < max_attempts
+            )
+            if should_retry:
+                interval = compute_backoff(policy, curr_attempt + 1)
+                task.after_time = timezone.now() + _td(seconds=interval)
+                task.save(update_fields=['error', 'after_time', 'updated_at'])
+            else:
+                task.status = ActivityTask.Status.TIMED_OUT
+                task.finished_at = now
+                task.save(
+                    update_fields=[
+                        'status',
+                        'error',
+                        'finished_at',
+                        'updated_at',
+                    ]
+                )
+                HistoryEvent.objects.create(
+                    execution=task.execution,
+                    type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
+                    pos=task.pos,
+                    details={'error': ErrorCode.ACTIVITY_TIMEOUT.value},
+                )
+                WorkflowExecution.objects.filter(
+                    pk=task.execution_id,
+                    status__in=[
+                        WorkflowExecution.Status.PENDING,
+                        WorkflowExecution.Status.RUNNING,
+                    ],
+                ).update(status=WorkflowExecution.Status.PENDING)
+        return True
+
+    def _timeout_workflows(self, now, batch):
+        wf_timeouts = list(
+            WorkflowExecution.objects.filter(
+                status__in=[
+                    WorkflowExecution.Status.PENDING,
+                    WorkflowExecution.Status.RUNNING,
+                ],
+                expires_at__isnull=False,
+                expires_at__lte=now,
+            ).values_list('id', flat=True)[:batch]
+        )
+        if not wf_timeouts:
+            return False
+        for wid in wf_timeouts:
+            try:
+                wf = WorkflowExecution.objects.get(id=wid)
+            except WorkflowExecution.DoesNotExist:
+                continue
+            self._timeout_workflow(wf)
+        return True
+
+    def _heartbeat_timeouts(self, now, batch):
+        hb_ids = list(
+            ActivityTask.objects.filter(
+                status=ActivityTask.Status.RUNNING,
+                heartbeat_timeout__isnull=False,
+            ).values_list('id', flat=True)[:batch]
+        )
+        if not hb_ids:
+            return False
+        for tid in hb_ids:
+            try:
+                task = ActivityTask.objects.get(id=tid)
+            except ActivityTask.DoesNotExist:
+                continue
+            hb_at = task.heartbeat_at or task.started_at or now
+            if (
+                task.heartbeat_timeout is not None
+                and hb_at + timedelta(seconds=float(task.heartbeat_timeout))
+                <= now
+            ):
+                self._handle_heartbeat_timeout(task, now)
+        return True
+
+    def _handle_heartbeat_timeout(self, task, now):
+        task.error = ErrorCode.HEARTBEAT_TIMEOUT.value
+        policy = task.retry_policy or {}
+        max_attempts = policy.get('maximum_attempts', 0)
+        curr_attempt = task.attempt or 1
+        should_retry = max_attempts == 0 or curr_attempt < max_attempts
+        if should_retry:
+            interval = compute_backoff(policy, curr_attempt)
+            task.status = ActivityTask.Status.QUEUED
+            task.after_time = timezone.now() + _td(seconds=interval)
+            task.save(
+                update_fields=[
+                    'status',
+                    'error',
+                    'after_time',
+                    'updated_at',
+                ]
+            )
+        else:
+            task.status = ActivityTask.Status.TIMED_OUT
+            task.finished_at = now
+            task.save(
+                update_fields=[
+                    'status',
+                    'error',
+                    'finished_at',
+                    'updated_at',
+                ]
+            )
+            try:
+                HistoryEvent.objects.create(
+                    execution=task.execution,
+                    type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
+                    pos=task.pos,
+                    details={'error': ErrorCode.HEARTBEAT_TIMEOUT.value},
+                )
+            except IntegrityError:
+                # Event already recorded by another worker iteration
+                pass
+            wf = task.execution
+            HistoryEvent.objects.create(
+                execution=wf,
+                type=HistoryEventType.WORKFLOW_FAILED.value,
+                pos=SPECIAL_EVENT_POS,
+                details={'error': ErrorCode.HEARTBEAT_TIMEOUT.value},
+            )
+            wf.status = WorkflowExecution.Status.FAILED
+            wf.error = ErrorCode.HEARTBEAT_TIMEOUT.value
+            wf.finished_at = now
+            wf.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+            _notify_parent(
+                wf,
+                HistoryEventType.CHILD_WORKFLOW_FAILED.value,
+                {'error': ErrorCode.HEARTBEAT_TIMEOUT.value},
+            )
+
+    def _schedule_to_close_timeouts(self, now, batch):
+        sc_ids = list(
+            ActivityTask.objects.filter(
+                status=ActivityTask.Status.RUNNING,
+                expires_at__isnull=False,
+                expires_at__lte=now,
+            ).values_list('id', flat=True)[:batch]
+        )
+        if not sc_ids:
+            return False
+        for tid in sc_ids:
+            try:
+                task = ActivityTask.objects.get(id=tid)
+            except ActivityTask.DoesNotExist:
+                continue
+            self._handle_schedule_to_close_timeout(task, now)
+        return True
+
+    def _handle_schedule_to_close_timeout(self, task, now):
+        task.error = ErrorCode.ACTIVITY_TIMEOUT.value
+        policy = task.retry_policy or {}
+        max_attempts = policy.get('maximum_attempts', 0)
+        curr_attempt = task.attempt or 1
+        should_retry = max_attempts == 0 or curr_attempt < max_attempts
+        if should_retry:
+            interval = compute_backoff(policy, curr_attempt)
+            task.status = ActivityTask.Status.QUEUED
+            task.after_time = timezone.now() + _td(seconds=interval)
+            task.save(
+                update_fields=[
+                    'status',
+                    'error',
+                    'after_time',
+                    'updated_at',
+                ]
+            )
+        else:
+            task.status = ActivityTask.Status.TIMED_OUT
+            task.finished_at = now
+            task.save(
+                update_fields=[
+                    'status',
+                    'error',
+                    'finished_at',
+                    'updated_at',
+                ]
+            )
+            HistoryEvent.objects.create(
+                execution=task.execution,
+                type=HistoryEventType.ACTIVITY_TIMED_OUT.value,
+                pos=task.pos,
+                details={'error': ErrorCode.ACTIVITY_TIMEOUT.value},
+            )
+            WorkflowExecution.objects.filter(
+                pk=task.execution_id,
+                status__in=[
+                    WorkflowExecution.Status.PENDING,
+                    WorkflowExecution.Status.RUNNING,
+                ],
+            ).update(status=WorkflowExecution.Status.PENDING)
+
+    def _dispatch_due_activities(self, now, batch, idle, running, max_tasks):
+        slots = len(idle)
+        if slots <= 0:
+            return False
+        due_ids = list(
+            ActivityTask.objects.filter(
+                status=ActivityTask.Status.QUEUED,
+                after_time__lte=now,
+                execution__status__in=[
+                    WorkflowExecution.Status.PENDING,
+                    WorkflowExecution.Status.RUNNING,
+                ],
+            )
+            .order_by('updated_at')
+            .values_list('id', flat=True)[: min(batch, slots)]
+        )
+        if not due_ids:
+            return False
+        progressed = False
+        for tid in due_ids:
+            if not idle:
+                break
+            proc = idle.pop(0)
+            claimed = ActivityTask.objects.filter(
+                id=tid,
+                status=ActivityTask.Status.QUEUED,
+                after_time__lte=now,
+            ).update(status=ActivityTask.Status.RUNNING)
+            if not claimed:
+                idle.append(proc)
+                continue
+            try:
+                task = ActivityTask.objects.get(id=tid)
+            except DatabaseError:
+                ActivityTask.objects.filter(id=tid).update(
+                    status=ActivityTask.Status.QUEUED
+                )
+                idle.append(proc)
+                continue
+            timeout = None
+            if task.expires_at is not None:
+                timeout = max(0.0, (task.expires_at - timezone.now()).total_seconds())
+            msg = json.dumps({'cmd': 'activity', 'id': tid}) + '\n'
+            try:
+                proc.stdin.write(msg)
+                proc.stdin.flush()
+            except Exception:
+                ActivityTask.objects.filter(id=tid).update(
+                    status=ActivityTask.Status.QUEUED
+                )
+                self._respawn_follower(idle, max_tasks)
+                continue
+            deadline = (
+                timezone.now() + _td(seconds=timeout)
+                if timeout is not None
+                else None
+            )
+            running.append(
+                {
+                    'type': 'activity',
+                    'id': tid,
+                    'proc': proc,
+                    'deadline': deadline,
+                }
+            )
+            progressed = True
+        return progressed
+
+    def _dispatch_runnable_workflows(self, now, batch, idle, running, max_tasks):
+        if not idle:
+            return False
+        runnable_ids = list(
+            WorkflowExecution.objects.filter(
+                status=WorkflowExecution.Status.PENDING
+            )
+            .order_by('updated_at')
+            .values_list('id', flat=True)[: min(batch, len(idle))]
+        )
+        if not runnable_ids:
+            return False
+        progressed = False
+        for wid in runnable_ids:
+            if not idle:
+                break
+            proc = idle.pop(0)
+            try:
+                wf = WorkflowExecution.objects.get(id=wid)
+            except DatabaseError:
+                idle.append(proc)
+                continue
+            timeout = None
+            if wf.expires_at is not None:
+                timeout = max(0.0, (wf.expires_at - timezone.now()).total_seconds())
+            msg = json.dumps({'cmd': 'workflow', 'id': wid}) + '\n'
+            try:
+                proc.stdin.write(msg)
+                proc.stdin.flush()
+            except Exception:
+                self._respawn_follower(idle, max_tasks)
+                continue
+            deadline = (
+                timezone.now() + _td(seconds=timeout)
+                if timeout is not None
+                else None
+            )
+            running.append(
+                {
+                    'type': 'workflow',
+                    'id': wid,
+                    'proc': proc,
+                    'deadline': deadline,
+                }
+            )
+            progressed = True
+        return progressed
 
     def handle(self, *args, **opts):
         mode = opts['dispatch_mode']
