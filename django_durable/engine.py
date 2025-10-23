@@ -675,35 +675,16 @@ def execute_activity(task: ActivityTask):
 
     # If workflow is not runnable (completed/failed/canceled), don't execute.
     task.execution.refresh_from_db(fields=['status'])
-    if task.execution.status in (
-        WorkflowExecution.Status.COMPLETED,
-        WorkflowExecution.Status.FAILED,
-        WorkflowExecution.Status.CANCELED,
-        WorkflowExecution.Status.TIMED_OUT,
-    ):
-        task.status = ActivityTask.Status.FAILED
-        if task.execution.status == WorkflowExecution.Status.CANCELED:
-            task.error = ErrorCode.WORKFLOW_CANCELED.value
-        else:
-            task.error = ErrorCode.WORKFLOW_NOT_RUNNABLE.value
-        task.finished_at = timezone.now()
-        task.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
-        HistoryEvent.objects.create(
-            execution=task.execution,
-            type=HistoryEventType.ACTIVITY_FAILED.value,
-            pos=task.pos,
-            details={'error': task.error},
+    if task.execution.is_terminal():
+        error = (
+            ErrorCode.WORKFLOW_CANCELED.value
+            if task.execution.status == WorkflowExecution.Status.CANCELED
+            else ErrorCode.WORKFLOW_NOT_RUNNABLE.value
         )
+        task.mark_failed(error)
         return
 
-    task.status = ActivityTask.Status.RUNNING
-    now = timezone.now()
-    task.started_at = now
-    task.heartbeat_at = now
-    task.attempt += 1
-    task.save(
-        update_fields=['status', 'started_at', 'heartbeat_at', 'attempt', 'updated_at']
-    )
+    task.start()
 
     try:
         _current_activity.task_id = str(task.id)
@@ -716,17 +697,7 @@ def execute_activity(task: ActivityTask):
                 raise UnknownActivityError(task.activity_name)
             result = fn(*task.args, **task.kwargs)
 
-        task.status = ActivityTask.Status.COMPLETED
-        task.result = result
-        task.finished_at = timezone.now()
-        task.save(update_fields=['status', 'result', 'finished_at', 'updated_at'])
-
-        HistoryEvent.objects.create(
-            execution=task.execution,
-            type=HistoryEventType.ACTIVITY_COMPLETED.value,
-            pos=task.pos,
-            details={'activity_name': task.activity_name, 'result': result},
-        )
+        task.mark_completed(result)
 
         # Nudge workflow runnable again unless terminal (e.g., canceled)
         WorkflowExecution.objects.filter(
@@ -750,19 +721,9 @@ def execute_activity(task: ActivityTask):
             should_retry = False
         if should_retry:
             interval = compute_backoff(policy, task.attempt)
-            task.status = ActivityTask.Status.QUEUED
-            task.after_time = timezone.now() + timedelta(seconds=interval)
-            task.save(update_fields=['status', 'error', 'after_time', 'updated_at'])
+            task.schedule_retry(interval)
         else:
-            task.status = ActivityTask.Status.FAILED
-            task.finished_at = timezone.now()
-            task.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
-            HistoryEvent.objects.create(
-                execution=task.execution,
-                type=HistoryEventType.ACTIVITY_FAILED.value,
-                pos=task.pos,
-                details={'error': str(e)},
-            )
+            task.mark_failed(str(e))
     finally:
         _current_activity.task_id = None
 
@@ -790,63 +751,7 @@ def cancel_workflow(
     """
     if not isinstance(execution, WorkflowExecution):
         execution = WorkflowExecution.objects.get(pk=execution)
-    with transaction.atomic():
-        execution.refresh_from_db()
-        if execution.status in (
-            WorkflowExecution.Status.COMPLETED,
-            WorkflowExecution.Status.FAILED,
-            WorkflowExecution.Status.CANCELED,
-            WorkflowExecution.Status.TIMED_OUT,
-        ):
-            return
-        HistoryEvent.objects.create(
-            execution=execution,
-            type=HistoryEventType.WORKFLOW_CANCELED.value,
-            pos=SPECIAL_EVENT_POS,
-            details={'reason': reason} if reason else {},
-        )
-        execution.status = WorkflowExecution.Status.CANCELED
-        execution.error = execution.error or ''
-        if reason:
-            execution.error = (
-                execution.error + '\n' if execution.error else ''
-            ) + f'Canceled: {reason}'
-        execution.finished_at = timezone.now()
-        execution.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
-
-        now = timezone.now()
-        qs = ActivityTask.objects.select_for_update().filter(
-            execution=execution, status=ActivityTask.Status.QUEUED
-        )
-        for t in qs:
-            t.status = ActivityTask.Status.FAILED
-            t.error = ErrorCode.WORKFLOW_CANCELED.value
-            t.finished_at = now
-            t.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
-            HistoryEvent.objects.create(
-                execution=execution,
-                type=HistoryEventType.ACTIVITY_FAILED.value,
-                pos=t.pos,
-                details={'error': ErrorCode.WORKFLOW_CANCELED.value},
-            )
-
-        _notify_parent(
-            execution,
-            HistoryEventType.CHILD_WORKFLOW_CANCELED.value,
-            {'error': ErrorCode.WORKFLOW_CANCELED.value},
-        )
-
-    for child in WorkflowExecution.objects.filter(
-        parent=execution,
-        status__in=[
-            WorkflowExecution.Status.PENDING,
-            WorkflowExecution.Status.RUNNING,
-        ],
-    ):
-        cancel_workflow(
-            child,
-            reason=reason or ErrorCode.PARENT_CANCELED.value,
-        )
+    execution.cancel(reason=reason)
 
 
 def signal_workflow(
@@ -859,22 +764,7 @@ def signal_workflow(
     """
     if not isinstance(execution, WorkflowExecution):
         execution = WorkflowExecution.objects.get(pk=execution)
-    with transaction.atomic():
-        HistoryEvent.objects.create(
-            execution=execution,
-            type=HistoryEventType.SIGNAL_ENQUEUED.value,
-            pos=SPECIAL_EVENT_POS,
-            details={'name': name, 'payload': payload},
-        )
-        if execution.status not in (
-            WorkflowExecution.Status.COMPLETED,
-            WorkflowExecution.Status.FAILED,
-            WorkflowExecution.Status.CANCELED,
-            WorkflowExecution.Status.TIMED_OUT,
-        ):
-            WorkflowExecution.objects.filter(pk=execution.pk).update(
-                status=WorkflowExecution.Status.PENDING
-            )
+    execution.enqueue_signal(name, payload=payload)
 
 
 # ---------------------------------------------------------------------------
