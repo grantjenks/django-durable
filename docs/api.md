@@ -70,6 +70,38 @@ cancel_workflow(exec_id, reason="user requested")
 ```
 
 
+## Model Helpers
+
+`WorkflowExecution` exposes orchestration helpers that mirror the public API but
+operate on a concrete model instance. These methods are useful when code
+already has the execution object on hand and wants to avoid reimplementing the
+status checks:
+
+- `WorkflowExecution.wait(timeout: float | None = None) -> Any`: poll for
+  completion and return the result or raise `WorkflowException`,
+  `WorkflowTimeout`, or `WaitWorkflowTimeout` when appropriate.
+- `WorkflowExecution.cancel(reason: str | None = None) -> None`: mark the
+  execution canceled, append a history event, fail queued activities, and
+  cascade to child workflows.
+- `WorkflowExecution.enqueue_signal(name: str, payload: Any | None = None) -> None`:
+  add a `SIGNAL_ENQUEUED` history event and transition the workflow back to the
+  runnable `PENDING` state when it is not yet terminal.
+
+`ActivityTask` also centralizes its state transitions:
+
+- `start()`: mark the task running, increment the attempt, and capture
+  timestamps.
+- `mark_completed(result: Any)`: store the result, finish the task, and log an
+  `ACTIVITY_COMPLETED` history event.
+- `mark_failed(error: str, finished_at: datetime | None = None)`: record the
+  failure reason and emit an `ACTIVITY_FAILED` event.
+- `schedule_retry(backoff_seconds: float)`: reset the task to `QUEUED` with the
+  supplied backoff applied to `after_time`.
+- `fail_due_to_cancel(finished_at: datetime | None = None)`: convenience wrapper
+  that fails the task with a `WORKFLOW_CANCELED` error code, used when a parent
+  execution cancels.
+
+
 ## Registry and Decorators
 
 The registry provides decorators to declare workflows and activities. Import from `django_durable`.
