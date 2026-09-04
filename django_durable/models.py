@@ -454,8 +454,17 @@ class ActivityTask(models.Model):
         lease_before=None,
     ):
         with self._transition() as (task, wf):
-            if task is None or wf.is_terminal():
+            if task is None:
                 return False
+            if wf.is_terminal():
+                error = ErrorCode.WORKFLOW_NOT_RUNNABLE.value
+                return task._finish(
+                    wf,
+                    self.Status.FAILED,
+                    HistoryEventType.ACTIVITY_FAILED.value,
+                    {'error': error},
+                    error=error,
+                )
             now = timezone.now()
             if heartbeat_before is not None:
                 heartbeat = task.heartbeat_at or task.started_at or task.updated_at

@@ -340,3 +340,23 @@ def test_early_signal_does_not_disable_new_patch():
     step_workflow(wf)
     wf.refresh_from_db()
     assert wf.result == {'new': True, 'payload': 42}
+
+
+@pytest.mark.parametrize('follower_alive', [True, False])
+def test_terminal_workflow_does_not_leave_a_claimed_activity_running(follower_alive):
+    from unittest.mock import Mock
+    wf = start(answer_flow)
+    task = wf.activities.get()
+    assert task.start()
+    WorkflowExecution.objects.filter(pk=wf.pk).update(status='FAILED')
+    proc = Mock()
+    proc.poll.return_value = None if follower_alive else 1
+    running = [{'type': 'activity', 'id': task.pk, 'token': str(task.lease_token), 'proc': proc}]
+    cmd = Command()
+    with patch.object(cmd, '_respawn_follower'):
+        cmd._handle_running_processes(running, [], 100, timezone.now())
+    task.refresh_from_db()
+    assert running == []
+    assert task.status == 'FAILED'
+    assert task.error == 'workflow_not_runnable'
+    assert wf.history.filter(type='activity_failed').count() == 1

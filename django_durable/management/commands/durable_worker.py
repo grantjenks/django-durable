@@ -270,6 +270,12 @@ class Command(BaseCommand):
             or task.execution.is_terminal()
         ):
             self._close_process(proc)
+            if (
+                task is not None
+                and str(task.lease_token) == info['token']
+                and task.execution.is_terminal()
+            ):
+                task.mark_failed(ErrorCode.WORKFLOW_NOT_RUNNABLE.value)
             running.remove(info)
             self._respawn_follower(idle, max_tasks)
             return True
