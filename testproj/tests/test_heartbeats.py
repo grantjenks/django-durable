@@ -77,7 +77,9 @@ def test_activity_heartbeat_timeout(tmp_path):
     out = run_manage("durable_start", "testproj.durable_workflows.heartbeat_timeout_flow")
     exec_id = out.splitlines()[-1].strip()
     # Step workflow once to enqueue the activity
-    run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "1")
+    from django_durable.engine import step_workflow
+    from django_durable.models import WorkflowExecution
+    step_workflow(WorkflowExecution.objects.get(pk=exec_id))
 
     # Mark the activity as running with a stale heartbeat
     code = (
@@ -86,6 +88,7 @@ def test_activity_heartbeat_timeout(tmp_path):
         "from datetime import timedelta\n"
         f"t = ActivityTask.objects.get(execution_id='{exec_id}')\n"
         "t.status = 'RUNNING'\n"
+        "t.attempt = 1\n"
         "t.started_at = timezone.now() - timedelta(seconds=5)\n"
         "t.heartbeat_at = t.started_at\n"
         "t.heartbeat_timeout = 0.1\n"

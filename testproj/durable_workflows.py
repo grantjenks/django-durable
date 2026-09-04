@@ -145,3 +145,9 @@ def parent_cascade_workflow(ctx):
     """Parent workflow that starts a child workflow and sleeps."""
     ctx.start_workflow(child_child_workflow)
     ctx.sleep(3600)
+
+
+@register.workflow()
+def crash_once_flow(ctx):
+    from .durable_activities import crash_once
+    return ctx.run_activity(crash_once)
