@@ -8,11 +8,7 @@ from django.db import connection, models, transaction
 from django.utils import timezone
 
 from .constants import SPECIAL_EVENT_POS, ErrorCode, HistoryEventType
-from .exceptions import (
-    WaitWorkflowTimeout,
-    WorkflowException,
-    WorkflowTimeout,
-)
+from .exceptions import WaitWorkflowTimeout, WorkflowException, WorkflowTimeout
 from .retry import compute_backoff
 
 
