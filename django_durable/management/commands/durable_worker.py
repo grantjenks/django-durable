@@ -1,11 +1,11 @@
 import json
+import os
 import select
 import socket
 import subprocess
 import sys
 import time
 import uuid
-from contextlib import redirect_stdout
 from datetime import timedelta
 
 from django.core.management.base import BaseCommand, CommandError
@@ -22,6 +22,7 @@ class Command(BaseCommand):
     help = 'Run the django-durable worker (workflows + activities).'
 
     def add_arguments(self, parser):
+        parser.add_argument('--control-fd', type=int, help='Internal ACK pipe.')
         parser.add_argument(
             '--tick', type=float, default=0.5, help='Poll interval in seconds.'
         )
@@ -74,9 +75,10 @@ class Command(BaseCommand):
             proc.kill()
         proc.wait()
         proc.stdin.close()
-        proc.stdout.close()
+        proc.control.close()
 
     def _spawn_follower_proc(self, max_tasks):
+        read_fd, write_fd = os.pipe()
         cmd = [
             sys.executable,
             sys.argv[0],
@@ -85,15 +87,27 @@ class Command(BaseCommand):
             'follower',
             '--max-follower-tasks',
             str(max_tasks),
+            '--control-fd',
+            str(write_fd),
         ]
         close_old_connections()
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=sys.stderr,
-            text=True,
-        )
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=sys.stderr,
+                stderr=sys.stderr,
+                text=True,
+                pass_fds=(write_fd,),
+            )
+        except BaseException:
+            os.close(read_fd)
+            raise
+        finally:
+            os.close(write_fd)
+        proc.control = os.fdopen(read_fd, 'rb', buffering=0)
+        os.set_blocking(read_fd, False)
+        proc.control_buffer = b''
         close_old_connections()
         return proc
 
@@ -102,8 +116,13 @@ class Command(BaseCommand):
         idle.append(proc)
         return proc
 
-    def _run_follower(self, max_tasks: int):
-        """Run follower mode: execute tasks from stdin and ack on stdout."""
+    def _run_follower(self, max_tasks: int, control_fd: int):
+        """Execute tasks from stdin; acknowledge on a private control pipe."""
+        if control_fd is None:
+            raise CommandError('Follower requires --control-fd')
+        # Application subprocesses must not inherit the control channel.
+        os.set_inheritable(control_fd, False)
+        control = os.fdopen(control_fd, 'w')
         close_old_connections()
         processed = 0
         try:
@@ -115,24 +134,30 @@ class Command(BaseCommand):
                 cmd = msg.get('cmd')
                 if cmd == 'exit':
                     break
-                # User prints/logging must not be interpreted as an ACK.
-                with redirect_stdout(sys.stderr):
-                    if cmd == 'activity':
-                        task = ActivityTask.objects.get(id=msg['id'])
-                        if str(task.lease_token) == msg.get('token'):
-                            execute_activity(task, claimed=True)
-                    elif cmd == 'workflow':
-                        wf = WorkflowExecution.objects.get(id=msg['id'])
-                        step_workflow(wf)
-                sys.stdout.write(
-                    json.dumps({'ok': True, 'id': msg['id'], 'token': msg.get('token')})
+                if cmd == 'activity':
+                    task = ActivityTask.objects.get(id=msg['id'])
+                    if str(task.lease_token) == msg.get('token'):
+                        execute_activity(task, claimed=True)
+                elif cmd == 'workflow':
+                    wf = WorkflowExecution.objects.get(id=msg['id'])
+                    step_workflow(wf)
+                processed += 1
+                control.write(
+                    json.dumps(
+                        {
+                            'ok': True,
+                            'id': msg['id'],
+                            'token': msg.get('token'),
+                            'retiring': bool(max_tasks and processed >= max_tasks),
+                        }
+                    )
                     + '\n'
                 )
-                sys.stdout.flush()
-                processed += 1
+                control.flush()
                 if max_tasks and processed >= max_tasks:
                     break
         finally:
+            control.close()
             close_old_connections()
 
     def _run_worker_loop(self, tick, batch, iterations, procs, max_tasks):
@@ -182,33 +207,47 @@ class Command(BaseCommand):
                 progressed = True
 
         if running:
-            rlist = [info['proc'].stdout for info in running]
+            rlist = [info['proc'].control for info in running]
             ready, _, _ = select.select(rlist, [], [], 0)
-            for r in ready:
-                for info in list(running):
-                    if info['proc'].stdout is r:
-                        line = r.readline()
-                        if not line:
-                            self._close_process(info['proc'])
-                            self._recover_activity(info)
-                            running.remove(info)
-                            self._respawn_follower(idle, max_tasks)
-                            progressed = True
-                            break
-                        try:
-                            ack = json.loads(line)
-                        except ValueError:
-                            break
-                        if ack != {
+            for info in list(running):
+                proc = info['proc']
+                if proc.control not in ready:
+                    continue
+                try:
+                    chunk = os.read(proc.control.fileno(), 4096)
+                except BlockingIOError:
+                    continue
+                proc.control_buffer += chunk
+                if b'\n' in proc.control_buffer:
+                    line, proc.control_buffer = proc.control_buffer.split(b'\n', 1)
+                    try:
+                        ack = json.loads(line)
+                    except ValueError:
+                        ack = {}
+                    if isinstance(ack, dict) and all(
+                        ack.get(key) == value
+                        for key, value in {
                             'ok': True,
                             'id': info['id'],
                             'token': info.get('token'),
-                        }:
-                            break
+                        }.items()
+                    ):
                         running.remove(info)
-                        idle.append(info['proc'])
+                        if ack.get('retiring'):
+                            self._close_process(proc)
+                            self._respawn_follower(idle, max_tasks)
+                        else:
+                            idle.append(proc)
                         progressed = True
-                        break
+                        continue
+                    # Invalid control traffic means this follower cannot be reused.
+                    chunk = b''
+                if not chunk or len(proc.control_buffer) > 4096:
+                    self._close_process(proc)
+                    self._recover_activity(info)
+                    running.remove(info)
+                    self._respawn_follower(idle, max_tasks)
+                    progressed = True
         return progressed
 
     def _handle_running_processes(self, running, idle, max_tasks, now):
@@ -509,7 +548,7 @@ class Command(BaseCommand):
     def handle(self, *args, **opts):
         mode = opts['dispatch_mode']
         if mode == 'follower':
-            self._run_follower(opts['max_follower_tasks'])
+            self._run_follower(opts['max_follower_tasks'], opts['control_fd'])
             return
         tick = opts['tick']
         batch = opts['batch']

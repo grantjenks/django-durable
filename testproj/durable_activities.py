@@ -122,3 +122,24 @@ def crash_once():
     if task.attempt == 1:
         os._exit(1)
     return {"attempts": task.attempt}
+
+
+@register.activity(retry_policy=RetryPolicy(maximum_attempts=1))
+def noisy_output(delay=0):
+    import logging
+    import os
+    import subprocess
+    import sys
+
+    os.write(1, b'partial OS output')
+    logger = logging.getLogger('durable-output-regression')
+    handler = logging.StreamHandler(sys.stdout)
+    logger.addHandler(handler)
+    try:
+        logger.warning('logging output')
+        subprocess.run([sys.executable, '-c', "import os; os.write(1, b'child output')"], check=True)
+        os.write(1, b'no trailing newline')
+        sleep(delay)
+    finally:
+        logger.removeHandler(handler)
+    return 42

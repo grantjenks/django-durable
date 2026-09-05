@@ -113,3 +113,41 @@ def test_dead_follower_is_recovered_without_activity_timeout():
     assert wf.result == {"attempts": 2}
     assert wf.activities.get().attempt == 2
     assert wf.history.filter(type="activity_completed").count() == 1
+
+
+@pytest.mark.parametrize('retire_after', [1, 2])
+def test_private_acks_and_retirement_preserve_single_attempt_tasks(retire_after):
+    run_manage('flush', '--noinput')
+    out = run_manage('durable_start', 'testproj.durable_workflows.noisy_flow',
+                     '--input', json.dumps({'count': 4}))
+    exec_id = out.stdout.strip().splitlines()[-1]
+    res = subprocess.run(
+        [sys.executable, MANAGE, 'durable_worker', '--tick', '0.01',
+         '--iterations', '150', '--procs', '1', '--max-follower-tasks', str(retire_after)],
+        capture_output=True, text=True, timeout=20,
+    )
+    assert res.returncode == 0, res.stderr
+    from django_durable.models import WorkflowExecution
+    wf = WorkflowExecution.objects.get(pk=exec_id)
+    assert wf.status == 'COMPLETED'
+    assert wf.result == [42] * 4
+    assert list(wf.activities.values_list('attempt', flat=True)) == [1] * 4
+    assert wf.history.filter(type='activity_completed').count() == 4
+    assert 'partial OS output' in res.stderr
+    assert 'child output' in res.stderr
+    assert 'no trailing newline' in res.stderr
+    assert 'logging output' in res.stderr
+
+
+def test_partial_application_output_does_not_block_timeout_checks():
+    run_manage('flush', '--noinput')
+    out = run_manage('durable_start', 'testproj.durable_workflows.noisy_flow',
+                     '--input', json.dumps({'delay': 10, 'activity_timeout': 1}))
+    exec_id = out.stdout.strip().splitlines()[-1]
+    res = subprocess.run(
+        [sys.executable, MANAGE, 'durable_worker', '--tick', '0.01',
+         '--iterations', '100', '--procs', '1'],
+        capture_output=True, text=True, timeout=8,
+    )
+    assert res.returncode == 0, res.stderr
+    assert read_activity_status(exec_id) == 'TIMED_OUT'

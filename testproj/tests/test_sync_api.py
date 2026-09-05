@@ -234,7 +234,7 @@ def test_wait_activity_timeout_relative_to_history():
     ev_wait.created_at = timezone.now() - timedelta(seconds=10)
     ev_wait.save(update_fields=["created_at"])
     with pytest.raises(WaitActivityTimeout):
-        ctx.wait_activity(1, timeout=5)
+        Context(execution=wf).wait_activity(1, timeout=5)
 
 
 def test_wait_workflow_raises_workflowtimeout():
@@ -286,7 +286,7 @@ def test_wait_workflow_timeout_relative_to_history():
     ev_wait.created_at = timezone.now() - timedelta(seconds=10)
     ev_wait.save(update_fields=["created_at"])
     with pytest.raises(WaitWorkflowTimeout):
-        ctx.wait_workflow(handle, timeout=5)
+        Context(execution=parent).wait_workflow(handle, timeout=5)
 
 
 def test_activity_input_mismatch_raises_nondeterminism():

@@ -3,6 +3,14 @@
 from django.db import migrations, models
 
 
+def requeue_running(apps, schema_editor):
+    # Replay existing waits once so the new worker can persist their deadlines.
+    execution = apps.get_model('django_durable', 'WorkflowExecution')
+    execution.objects.using(schema_editor.connection.alias).filter(
+        status='RUNNING'
+    ).update(status='PENDING')
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -25,6 +33,7 @@ class Migration(migrations.Migration):
             name='wake_at',
             field=models.DateTimeField(blank=True, null=True),
         ),
+        migrations.RunPython(requeue_running, migrations.RunPython.noop),
         migrations.AlterField(
             model_name='activitytask',
             name='status',

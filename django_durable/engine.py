@@ -1,7 +1,7 @@
 import json
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Callable
 
@@ -43,6 +43,16 @@ class NeedsPause(Exception):
 class Context:
     execution: WorkflowExecution
     pos: int = 0  # deterministic step counter
+
+    # Count calls per handle separately from command positions for compatibility
+    # with existing replay histories. The first wait retains its legacy identity.
+    wait_counts: dict = field(default_factory=dict)
+
+    def _wait_index(self, kind, handle):
+        key = (kind, handle)
+        index = self.wait_counts.get(key, 0)
+        self.wait_counts[key] = index + 1
+        return index
 
     def _bump(self) -> int:
         p = self.pos
@@ -241,6 +251,7 @@ class Context:
     def wait_activity(self, handle: int, timeout: float | None = None) -> Any:
         """Wait for a previously started activity and return its result."""
         pos = handle
+        wait_index = self._wait_index('activity', handle)
 
         ev_done = (
             HistoryEvent.objects.filter(
@@ -256,15 +267,18 @@ class Context:
             .order_by('id')
             .last()
         )
-        ev_wait = (
-            HistoryEvent.objects.filter(
-                execution=self.execution,
-                pos=pos,
-                type=HistoryEventType.ACTIVITY_WAIT.value,
-            )
-            .order_by('id')
-            .last()
+        waits = HistoryEvent.objects.filter(
+            execution=self.execution, type=HistoryEventType.ACTIVITY_WAIT.value
         )
+        if wait_index == 0:
+            waits = waits.filter(pos=pos)
+        else:
+            waits = waits.filter(
+                pos=SPECIAL_EVENT_POS,
+                details__handle=handle,
+                details__wait_index=wait_index,
+            )
+        ev_wait = waits.order_by('id').last()
         self._check_wait_deadline(ev_wait, timeout, ev_done, WaitActivityTimeout)
         if ev_done:
             if ev_done.type == HistoryEventType.ACTIVITY_FAILED.value:
@@ -290,8 +304,12 @@ class Context:
             ev_wait = HistoryEvent.objects.create(
                 execution=self.execution,
                 type=HistoryEventType.ACTIVITY_WAIT.value,
-                pos=pos,
-                details={'timeout': timeout},
+                pos=pos if wait_index == 0 else SPECIAL_EVENT_POS,
+                details={
+                    'timeout': timeout,
+                    'handle': handle,
+                    'wait_index': wait_index,
+                },
             )
 
         self._check_wait_deadline(ev_wait, timeout, None, WaitActivityTimeout)
@@ -521,15 +539,20 @@ class Context:
             .order_by('id')
             .last()
         )
-        ev_wait = (
-            HistoryEvent.objects.filter(
-                execution=self.execution,
-                type=HistoryEventType.CHILD_WORKFLOW_WAIT.value,
-                details__child_id=handle,
-            )
-            .order_by('id')
-            .last()
+        wait_index = self._wait_index('workflow', handle)
+        waits = HistoryEvent.objects.filter(
+            execution=self.execution,
+            type=HistoryEventType.CHILD_WORKFLOW_WAIT.value,
+            details__child_id=handle,
         )
+        if wait_index == 0:
+            # Old child waits have no index; preserve their original deadline.
+            waits = waits.exclude(details__has_key='wait_index') | waits.filter(
+                details__wait_index=0
+            )
+        else:
+            waits = waits.filter(details__wait_index=wait_index)
+        ev_wait = waits.order_by('id').last()
         self._check_wait_deadline(ev_wait, timeout, ev_done, WaitWorkflowTimeout)
         if ev_done:
             if ev_done.type == HistoryEventType.CHILD_WORKFLOW_FAILED.value:
@@ -558,7 +581,11 @@ class Context:
                 execution=self.execution,
                 type=HistoryEventType.CHILD_WORKFLOW_WAIT.value,
                 pos=SPECIAL_EVENT_POS,
-                details={'child_id': handle, 'timeout': timeout},
+                details={
+                    'child_id': handle,
+                    'timeout': timeout,
+                    'wait_index': wait_index,
+                },
             )
 
         self._check_wait_deadline(ev_wait, timeout, None, WaitWorkflowTimeout)
@@ -624,6 +651,16 @@ def _notify_parent(exec_obj: WorkflowExecution, event_type: str, details: dict):
     ).update(status=WorkflowExecution.Status.PENDING)
 
 
+def _finish_outstanding_activities(wf):
+    # Called with the workflow row locked, inside its terminal transaction.
+    for task in wf.activities.filter(
+        status__in=[ActivityTask.Status.QUEUED, ActivityTask.Status.RUNNING]
+    ):
+        task.mark_failed(
+            ErrorCode.WORKFLOW_NOT_RUNNABLE.value, finished_at=wf.finished_at
+        )
+
+
 def step_workflow(exec_obj: WorkflowExecution):
     """Advance a workflow execution by replaying until the next pause or completion."""
     with transaction.atomic():
@@ -659,7 +696,17 @@ def step_workflow(exec_obj: WorkflowExecution):
             wf.status = WorkflowExecution.Status.FAILED
             wf.error = str(e)
             wf.finished_at = timezone.now()
-            wf.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+            wf.wake_at = None
+            wf.save(
+                update_fields=[
+                    'status',
+                    'error',
+                    'finished_at',
+                    'wake_at',
+                    'updated_at',
+                ]
+            )
+            _finish_outstanding_activities(wf)
             _notify_parent(
                 wf,
                 HistoryEventType.CHILD_WORKFLOW_FAILED.value,
@@ -688,6 +735,7 @@ def step_workflow(exec_obj: WorkflowExecution):
         wf.save(
             update_fields=['status', 'result', 'finished_at', 'wake_at', 'updated_at']
         )
+        _finish_outstanding_activities(wf)
         _notify_parent(
             wf,
             HistoryEventType.CHILD_WORKFLOW_COMPLETED.value,

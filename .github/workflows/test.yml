@@ -28,6 +28,9 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v3
 
+      - name: Check lockfile
+        run: uv lock --check --no-config
+
       - name: Run format
         if: matrix.python-version == '3.13' && matrix.django == '5.2'
         run: uv run nox -s format

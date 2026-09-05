@@ -360,3 +360,179 @@ def test_terminal_workflow_does_not_leave_a_claimed_activity_running(follower_al
     assert task.status == 'FAILED'
     assert task.error == 'workflow_not_runnable'
     assert wf.history.filter(type='activity_failed').count() == 1
+
+
+@pytest.mark.parametrize('kind', ['activity', 'workflow'])
+def test_repeated_waits_have_independent_deadlines_and_replay(kind):
+    @register.workflow()
+    def child(ctx):
+        return 42
+
+    @register.workflow()
+    def repeated(ctx):
+        if kind == 'activity':
+            handle = ctx.start_activity(answer)
+            wait = ctx.wait_activity
+            exc = WaitActivityTimeout
+        else:
+            handle = ctx.start_workflow(child)
+            wait = ctx.wait_workflow
+            exc = WaitWorkflowTimeout
+        try:
+            wait(handle, timeout=0)
+        except exc:
+            pass
+        result = wait(handle, timeout=10)
+        # Wait calls must not shift subsequent command positions.
+        assert ctx.start_activity(answer) == 1
+        return result
+
+    wf = start(repeated)
+    assert wf.status == 'RUNNING'
+    assert wf.wake_at > timezone.now()
+    wait_type = 'activity_wait' if kind == 'activity' else 'child_workflow_wait'
+    waits = list(wf.history.filter(type=wait_type).order_by('id'))
+    assert [e.details['timeout'] for e in waits] == [0, 10]
+    # Replay without a result preserves both deadlines and creates no more waits.
+    WorkflowExecution.objects.filter(pk=wf.pk).update(status='PENDING')
+    step_workflow(wf)
+    assert wf.history.filter(type=wait_type).count() == 2
+    if kind == 'activity':
+        execute_activity(wf.activities.get())
+    else:
+        step_workflow(wf.children.get())
+    step_workflow(wf)
+    wf.refresh_from_db()
+    assert wf.status == 'COMPLETED'
+    assert wf.result == 42
+    assert wf.history.filter(type=wait_type).count() == 2
+
+
+@pytest.mark.parametrize('fail', [False, True])
+@pytest.mark.parametrize('claimed', [False, True])
+def test_workflow_terminal_commit_finishes_outstanding_activities(fail, claimed):
+    @register.workflow()
+    def abandon(ctx):
+        ctx.start_activity(answer)
+        if fail:
+            raise ValueError('workflow failed')
+        return 7
+
+    wf = WorkflowExecution.objects.get(pk=start_workflow(abandon))
+    # Schedule ahead of replay to also cover an already claimed attempt.
+    Context(wf).start_activity(answer)
+    task = wf.activities.get()
+    if claimed:
+        assert task.start()
+    step_workflow(wf)
+    wf.refresh_from_db()
+    task.refresh_from_db()
+    assert wf.status == ('FAILED' if fail else 'COMPLETED')
+    assert task.status == 'FAILED'
+    assert task.error == 'workflow_not_runnable'
+    assert task.finished_at == wf.finished_at
+    assert task.lease_expires_at is None
+    assert wf.history.filter(type='activity_failed', pos=task.pos).count() == 1
+    assert not task.mark_completed('late')
+
+
+def test_workflow_terminal_cleanup_is_atomic():
+    @register.workflow()
+    def abandon(ctx):
+        ctx.start_activity(answer)
+        return 7
+
+    wf = WorkflowExecution.objects.get(pk=start_workflow(abandon))
+    class Crash(BaseException):
+        pass
+    with patch.object(ActivityTask, 'mark_failed', side_effect=Crash):
+        with pytest.raises(Crash):
+            step_workflow(wf)
+    wf.refresh_from_db()
+    assert wf.status == 'PENDING'
+    assert not wf.activities.exists()
+    assert not wf.history.exists()
+
+
+@pytest.mark.parametrize('kind', ['activity', 'workflow'])
+def test_migration_requeues_legacy_timed_waits(kind):
+    from django.db import connection
+    from django.db.migrations.executor import MigrationExecutor
+
+    @register.workflow()
+    def child(ctx):
+        return 42
+
+    @register.workflow()
+    def waiting(ctx):
+        if kind == 'activity':
+            return ctx.wait_activity(ctx.start_activity(answer), timeout=10)
+        return ctx.wait_workflow(ctx.start_workflow(child), timeout=10)
+
+    wf = start(waiting)
+    # Preserve the historical records but remove metadata absent before 0008.
+    for event in wf.history.filter(type__in=['activity_wait', 'child_workflow_wait']):
+        event.details.pop('wait_index', None)
+        event.details.pop('handle', None)
+        event.save(update_fields=['details'])
+    old = [('django_durable', '0007_historyevent_textchoices_unique')]
+    latest = [('django_durable', '0008_activity_leases_and_wait_deadlines')]
+    executor = MigrationExecutor(connection)
+    try:
+        executor.migrate(old)
+        executor = MigrationExecutor(connection)
+        historical = executor.loader.project_state(old).apps.get_model('django_durable', 'WorkflowExecution')
+        historical.objects.filter(pk=wf.pk).update(status='RUNNING')
+        completed = historical.objects.create(workflow_name='old', status='COMPLETED')
+        executor.migrate(latest)
+        wf.refresh_from_db()
+        assert wf.status == 'PENDING'
+        assert wf.wake_at is None
+        assert WorkflowExecution.objects.get(pk=completed.pk).status == 'COMPLETED'
+        step_workflow(wf)
+        wf.refresh_from_db()
+        assert wf.status == 'RUNNING'
+        assert wf.wake_at is not None
+        Command()._process_timeouts(wf.wake_at + timedelta(seconds=1), 100)
+        wf.refresh_from_db()
+        assert wf.status == 'PENDING'
+    finally:
+        MigrationExecutor(connection).migrate(latest)
+
+
+@pytest.mark.parametrize('retiring', [False, True])
+def test_fragmented_control_ack_never_blocks_or_reuses_retiring_follower(retiring):
+    import json
+    from unittest.mock import Mock
+
+    read_fd, write_fd = os.pipe()
+    proc = Mock()
+    proc.poll.return_value = None
+    proc.control = os.fdopen(read_fd, 'rb', buffering=0)
+    os.set_blocking(read_fd, False)
+    proc.control_buffer = b''
+    info = {'type': 'activity', 'id': 123, 'token': 'owned', 'proc': proc}
+    running, idle = [info], []
+    cmd = Command()
+    ack = json.dumps({'ok': True, 'id': 123, 'token': 'owned', 'retiring': retiring}).encode() + b'\n'
+    try:
+        # A read-ready channel does not imply a complete frame is available.
+        os.write(write_fd, ack[:10])
+        with patch.object(cmd, '_close_process') as close, patch.object(cmd, '_respawn_follower') as spawn:
+            assert not cmd._refresh_idle_processes(idle, running, 1)
+            assert running == [info]
+            assert not idle
+            os.write(write_fd, ack[10:])
+            assert cmd._refresh_idle_processes(idle, running, 1)
+            assert not running
+            if retiring:
+                assert not idle
+                close.assert_called_once_with(proc)
+                spawn.assert_called_once_with(idle, 1)
+            else:
+                assert idle == [proc]
+                close.assert_not_called()
+                spawn.assert_not_called()
+    finally:
+        os.close(write_fd)
+        proc.control.close()
