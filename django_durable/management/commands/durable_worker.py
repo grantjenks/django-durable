@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import suppress
 from datetime import timedelta
 
 from django.core.management.base import BaseCommand, CommandError
@@ -71,11 +72,21 @@ class Command(BaseCommand):
 
     @staticmethod
     def _close_process(proc):
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait()
-        proc.stdin.close()
-        proc.control.close()
+        try:
+            with suppress(OSError):
+                if proc.poll() is None:
+                    proc.kill()
+            with suppress(OSError):
+                proc.wait()
+        finally:
+            try:
+                # close() flushes buffered commands, including one whose dispatch
+                # already failed. A broken pipe must not interrupt recovery.
+                with suppress(OSError):
+                    proc.stdin.close()
+            finally:
+                with suppress(OSError):
+                    proc.control.close()
 
     def _spawn_follower_proc(self, max_tasks):
         read_fd, write_fd = os.pipe()
@@ -305,7 +316,11 @@ class Command(BaseCommand):
             task is None
             or str(task.lease_token) != info['token']
             or task.status
-            in (ActivityTask.Status.QUEUED, ActivityTask.Status.TIMED_OUT)
+            in (
+                ActivityTask.Status.QUEUED,
+                ActivityTask.Status.FAILED,
+                ActivityTask.Status.TIMED_OUT,
+            )
             or task.execution.is_terminal()
         ):
             self._close_process(proc)
@@ -319,7 +334,7 @@ class Command(BaseCommand):
             self._respawn_follower(idle, max_tasks)
             return True
         if task.status != ActivityTask.Status.RUNNING:
-            return False  # The committed outcome is awaiting its ACK.
+            return False  # Successful completion is awaiting its ACK.
         if not task.renew_lease():
             self._close_process(proc)
             self._recover_activity(info)
@@ -474,9 +489,13 @@ class Command(BaseCommand):
                 proc.stdin.write(msg)
                 proc.stdin.flush()
             except Exception:
-                self._close_process(proc)
-                task.retry_or_fail('worker_lost')
-                self._respawn_follower(idle, max_tasks)
+                try:
+                    self._close_process(proc)
+                finally:
+                    try:
+                        task.retry_or_fail('worker_lost')
+                    finally:
+                        self._respawn_follower(idle, max_tasks)
                 continue
             deadline = (
                 timezone.now() + timedelta(seconds=timeout)
@@ -526,8 +545,10 @@ class Command(BaseCommand):
                 proc.stdin.write(msg)
                 proc.stdin.flush()
             except Exception:
-                self._close_process(proc)
-                self._respawn_follower(idle, max_tasks)
+                try:
+                    self._close_process(proc)
+                finally:
+                    self._respawn_follower(idle, max_tasks)
                 continue
             deadline = (
                 timezone.now() + timedelta(seconds=timeout)

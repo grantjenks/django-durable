@@ -111,6 +111,9 @@ the wait deadline does not change the timeout branch on later replay. Timing out
 a wait does not cancel the underlying activity or child workflow. Each wait call
 on a handle has its own deterministic identity and deadline; catching a timeout
 and waiting again starts a separate wait without shifting command positions.
+Wait events also retain their logical command position for patch detection;
+legacy positions are reconstructed from earlier commands. Enqueuing a signal
+does not itself count as workflow progress.
 
 `run_workflow()` drives the scheduler inline, including deadlines, and renews
 activity leases while application code runs. It cannot interrupt Python code in

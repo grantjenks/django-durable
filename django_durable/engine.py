@@ -6,6 +6,7 @@ from datetime import timedelta
 from typing import Any, Callable
 
 from django.db import DatabaseError, close_old_connections, transaction
+from django.db.models import Max
 from django.utils import timezone
 
 from .constants import (
@@ -103,7 +104,7 @@ class Context:
         This method mirrors that behaviour by recording a version marker the
         first time it is reached.  If the workflow history already contains
         events beyond the current call position, we treat the execution as
-        replaying and return ``False`` while recording version ``0``.  New
+        replaying and return ``False`` without consuming a position. New
         executions record version ``1`` and return ``True``.
         """
 
@@ -135,7 +136,7 @@ class Context:
             pos__gt=self.pos,
             pos__lt=SPECIAL_EVENT_POS,
         )
-        if has_current.exists() or has_future.exists():
+        if has_current.exists() or has_future.exists() or self._has_unreplayed_wait():
             return False
 
         pos = self._bump()
@@ -146,6 +147,46 @@ class Context:
             details={'change_id': f'patch:{change_id}', 'version': 1},
         )
         return True
+
+    def _has_unreplayed_wait(self):
+        """Wait events also record progress, independently of their storage pos."""
+        waits = HistoryEvent.objects.filter(
+            execution=self.execution,
+            type__in=[
+                HistoryEventType.ACTIVITY_WAIT.value,
+                HistoryEventType.CHILD_WORKFLOW_WAIT.value,
+            ],
+        )
+        for event in waits:
+            if event.type == HistoryEventType.ACTIVITY_WAIT.value:
+                kind = 'activity'
+                handle = event.details.get('handle', event.pos)
+            else:
+                kind = 'workflow'
+                handle = event.details['child_id']
+            index = event.details.get('wait_index', 0)
+            if index < self.wait_counts.get((kind, handle), 0):
+                continue  # This wait was already reached during the current replay.
+            command_pos = event.details.get('command_pos')
+            if command_pos is None:
+                # Legacy waits did not store their logical position. Reconstruct
+                # the command counter from commands recorded before that wait.
+                # External signals and activity/child outcomes do not advance it.
+                previous = HistoryEvent.objects.filter(
+                    execution=self.execution,
+                    id__lt=event.id,
+                    type__in=[
+                        HistoryEventType.ACTIVITY_SCHEDULED.value,
+                        HistoryEventType.CHILD_WORKFLOW_SCHEDULED.value,
+                        HistoryEventType.VERSION_MARKER.value,
+                        HistoryEventType.SIGNAL_WAIT.value,
+                        HistoryEventType.SIGNAL_CONSUMED.value,
+                    ],
+                ).aggregate(pos=Max('pos'))['pos']
+                command_pos = 0 if previous is None else previous + 1
+            if command_pos >= self.pos:
+                return True
+        return False
 
     def deprecate_patch(self, change_id: str):
         """Record that a previously patched section has been removed.
@@ -309,6 +350,7 @@ class Context:
                     'timeout': timeout,
                     'handle': handle,
                     'wait_index': wait_index,
+                    'command_pos': self.pos,
                 },
             )
 
@@ -585,6 +627,7 @@ class Context:
                     'child_id': handle,
                     'timeout': timeout,
                     'wait_index': wait_index,
+                    'command_pos': self.pos,
                 },
             )
 

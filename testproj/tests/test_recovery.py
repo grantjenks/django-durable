@@ -536,3 +536,124 @@ def test_fragmented_control_ack_never_blocks_or_reuses_retiring_follower(retirin
     finally:
         os.close(write_fd)
         proc.control.close()
+
+
+@pytest.mark.parametrize('kind', ['activity', 'child'])
+@pytest.mark.parametrize('repeated', [False, True])
+@pytest.mark.parametrize('legacy', [False, True])
+def test_inserted_patch_before_existing_wait_preserves_old_path(kind, repeated, legacy):
+    @register.workflow()
+    def child(ctx):
+        return 42
+
+    changed = False
+    @register.workflow()
+    def evolving(ctx):
+        if kind == 'activity':
+            handle = ctx.start_activity(answer)
+            wait, exc = ctx.wait_activity, WaitActivityTimeout
+        else:
+            handle = ctx.start_workflow(child)
+            wait, exc = ctx.wait_workflow, WaitWorkflowTimeout
+        if repeated:
+            try:
+                wait(handle, timeout=0)
+            except exc:
+                pass
+        if changed and ctx.patched('before-wait'):
+            return 'WRONG_NEW_PATH'
+        return wait(handle, timeout=10)
+
+    wf = start(evolving)
+    if legacy:
+        for event in wf.history.filter(type__in=['activity_wait', 'child_workflow_wait']):
+            event.details.pop('command_pos', None)
+            event.save(update_fields=['details'])
+    changed = True
+    WorkflowExecution.objects.filter(pk=wf.pk).update(status='PENDING')
+    step_workflow(wf)
+    wf.refresh_from_db()
+    assert wf.status == 'RUNNING', wf.result
+    assert not wf.history.filter(type='version_marker').exists()
+    if kind == 'activity':
+        execute_activity(wf.activities.get())
+    else:
+        step_workflow(wf.children.get())
+    step_workflow(wf)
+    wf.refresh_from_db()
+    assert wf.result == 42
+    # A wait reached earlier in this replay must not suppress a genuinely new patch.
+    fresh = start(evolving)
+    assert fresh.result == 'WRONG_NEW_PATH'
+
+
+@pytest.mark.parametrize('kind', ['activity', 'workflow'])
+def test_failed_dispatch_closes_real_broken_pipe_and_recovers(kind):
+    import subprocess
+    import sys
+    from unittest.mock import Mock
+
+    wf = start(answer_flow) if kind == 'activity' else WorkflowExecution.objects.get(pk=start_workflow(answer_flow))
+    # An idle follower has exited after its last poll, leaving its write pipe open.
+    proc = subprocess.Popen([sys.executable, '-c', 'pass'], stdin=subprocess.PIPE, text=True)
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    proc.control = os.fdopen(read_fd, 'rb', buffering=0)
+    proc.wait(timeout=5)
+    idle, running = [proc], []
+    replacement = Mock()
+    cmd = Command()
+    try:
+        with patch.object(cmd, '_spawn_follower_proc', return_value=replacement):
+            dispatch = cmd._dispatch_due_activities if kind == 'activity' else cmd._dispatch_runnable_workflows
+            dispatch(timezone.now(), 10, idle, running, 100)
+        assert proc.stdin.closed
+        assert proc.control.closed
+        assert idle == [replacement]
+        assert not running
+        if kind == 'activity':
+            task = wf.activities.get()
+            assert task.status == 'QUEUED'
+            assert task.lease_token is None
+            assert task.lease_expires_at is None
+        else:
+            wf.refresh_from_db()
+            assert wf.status == 'PENDING'
+    finally:
+        # Also close the control FD on the deliberately broken implementation.
+        proc.control.close()
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+
+
+def test_exhausted_lease_failover_retires_original_hung_follower():
+    from unittest.mock import Mock
+
+    wf = start(answer_flow)
+    task = wf.activities.get()
+    task.retry_policy = {'maximum_attempts': 1}
+    task.max_attempts = 1
+    task.save()
+    assert task.start()
+    token = str(task.lease_token)
+    ActivityTask.objects.filter(pk=task.pk).update(lease_expires_at=timezone.now()-timedelta(seconds=1))
+    # Another dispatcher recovers the lease while the original follower is hung.
+    Command()._process_timeouts(timezone.now(), 100)
+    task.refresh_from_db()
+    assert task.status == 'FAILED'
+    wf.refresh_from_db()
+    assert wf.status == 'PENDING'
+    proc, replacement = Mock(), Mock()
+    proc.poll.return_value = None
+    running = [{'type': 'activity', 'id': task.pk, 'token': token, 'proc': proc}]
+    idle = []
+    owner = Command()
+    with patch.object(owner, '_spawn_follower_proc', return_value=replacement):
+        assert owner._handle_running_processes(running, idle, 100, timezone.now())
+    assert not running
+    assert idle == [replacement]
+    proc.kill.assert_called_once()
+    proc.control.close.assert_called_once()
+    assert wf.history.filter(type='activity_failed').count() == 1
