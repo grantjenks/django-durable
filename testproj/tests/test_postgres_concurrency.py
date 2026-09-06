@@ -88,3 +88,29 @@ def test_signal_and_cancellation_cannot_resurrect_workflow():
     race(lambda: first.enqueue_signal('go'), second.cancel)
     wf.refresh_from_db()
     assert wf.status == 'CANCELED'
+
+
+def test_dispatch_release_racing_receipt_preserves_attempt_accounting():
+    wf = WorkflowExecution.objects.create(workflow_name='wf', status='RUNNING')
+    task = ActivityTask.objects.create(execution=wf, activity_name='activity', max_attempts=1)
+    assert task.start()
+    token = task.lease_token
+    snapshot = ActivityTask.objects.get(pk=task.pk)
+
+    def receipt():
+        # Match the follower's fenced transition immediately before user code.
+        return ActivityTask.objects.filter(pk=task.pk, status='RUNNING', lease_token=token).update(started_at=timezone.now())
+
+    released, received = race(snapshot.release_unstarted_claim, receipt)
+    task.refresh_from_db()
+    assert released != bool(received)
+    if released:
+        assert task.status == 'QUEUED'
+        assert task.attempt == 0
+        assert task.lease_token is None
+    else:
+        assert task.status == 'RUNNING'
+        assert task.attempt == 1
+        assert task.lease_token == token
+        assert task.started_at is not None
+    assert not wf.history.exists()

@@ -90,7 +90,10 @@ idempotent (for example, using an application-defined idempotency key).
 Each activity attempt is claimed with a unique lease token before dispatch. The
 worker renews the lease while its follower is alive. A replacement worker can
 recover an expired lease, including a task whose original worker crashed before
-sending it to a follower. Completion, failure, retries, and heartbeats check the
+sending it to a follower. If sending fails, the dispatcher stops that follower
+and releases its claim without charging an attempt, provided the token still
+matches and execution has not started. Ambiguous failures after execution starts
+use the normal retry policy. Completion, failure, retries, and heartbeats check the
 attempt token so that an older attempt cannot overwrite its replacement's state.
 This protects stored results; it cannot undo an external side effect.
 
@@ -104,7 +107,10 @@ transaction. A schedule-to-close timeout covers the entire activity, including
 queueing and retries, and always ends it as `TIMED_OUT`. Heartbeat failures and
 worker loss may retry within that overall deadline and the retry policy.
 Workflow completion or failure also finishes outstanding queued/running activities
-with `workflow_not_runnable`, in the same transaction.
+with `workflow_not_runnable`, in the same transaction. Workflow timeout and
+cancellation commit their recursive child cancellation in the same transaction
+as the parent transition. A failed cascade rolls back the parent, descendants,
+activity transitions, and history so the operation can be retried.
 
 Timed activity/child waits persist a workflow wake time. A result committed after
 the wait deadline does not change the timeout branch on later replay. Timing out

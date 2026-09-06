@@ -493,7 +493,8 @@ class Command(BaseCommand):
                     self._close_process(proc)
                 finally:
                     try:
-                        task.retry_or_fail('worker_lost')
+                        if not task.release_unstarted_claim():
+                            task.retry_or_fail('worker_lost')
                     finally:
                         self._respawn_follower(idle, max_tasks)
                 continue

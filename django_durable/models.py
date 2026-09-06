@@ -143,18 +143,11 @@ class WorkflowExecution(models.Model):
                 {'error': ErrorCode.WORKFLOW_CANCELED.value},
             )
 
-        children = WorkflowExecution.objects.filter(
-            parent=self,
-            status__in=[
-                WorkflowExecution.Status.PENDING,
-                WorkflowExecution.Status.RUNNING,
-            ],
-        )
-        for child in children:
-            child.cancel(reason=reason or ErrorCode.PARENT_CANCELED.value)
+            for child in self.children.exclude(status__in=self.TERMINAL_STATUSES):
+                child.cancel(reason=reason or ErrorCode.PARENT_CANCELED.value)
 
     def time_out(self):
-        """Finish an execution and its outstanding tasks in one transaction."""
+        """Atomically finish an execution, its activities, and its child cascade."""
         with transaction.atomic():
             locked = lock_execution(self.pk)
             self.__dict__.update(locked.__dict__)
@@ -186,8 +179,10 @@ class WorkflowExecution(models.Model):
             self._notify_parent(
                 HistoryEventType.CHILD_WORKFLOW_TIMED_OUT.value, {'error': self.error}
             )
-        for child in self.children.exclude(status__in=self.TERMINAL_STATUSES):
-            child.cancel(reason=ErrorCode.WORKFLOW_TIMEOUT.value)
+            # Keep the complete recursive cascade inside this transaction. If
+            # any descendant fails, the parent remains eligible for a retry.
+            for child in self.children.exclude(status__in=self.TERMINAL_STATUSES):
+                child.cancel(reason=ErrorCode.WORKFLOW_TIMEOUT.value)
         return True
 
     def enqueue_signal(self, name: str, payload=None):
@@ -320,6 +315,36 @@ class ActivityTask(models.Model):
             if claimed:
                 self.refresh_from_db()
             return bool(claimed)
+
+    def release_unstarted_claim(self):
+        """Release a failed dispatch after its follower has been stopped.
+
+        A command may have reached the follower even when dispatch raises. Only
+        refund a claim whose token still matches and whose execution never began.
+        """
+        with self._transition() as (task, wf):
+            if (
+                task is None
+                or task.status != self.Status.RUNNING
+                or task.lease_token is None
+                or task.started_at is not None
+                or wf.is_terminal()
+            ):
+                return False
+            task.status = self.Status.QUEUED
+            task.attempt -= 1
+            task.lease_token = None
+            task.lease_expires_at = None
+            task.save(
+                update_fields=[
+                    'status',
+                    'attempt',
+                    'lease_token',
+                    'lease_expires_at',
+                    'updated_at',
+                ]
+            )
+            return True
 
     def renew_lease(self):
         now = timezone.now()

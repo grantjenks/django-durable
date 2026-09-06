@@ -657,3 +657,155 @@ def test_exhausted_lease_failover_retires_original_hung_follower():
     proc.kill.assert_called_once()
     proc.control.close.assert_called_once()
     assert wf.history.filter(type='activity_failed').count() == 1
+
+
+@pytest.mark.parametrize('operation', ['timeout', 'cancel'])
+@pytest.mark.parametrize('failure', ['database', 'crash'])
+def test_cascade_failure_rolls_back_entire_tree_and_can_be_retried(operation, failure):
+    from django.db import DatabaseError
+
+    class Crash(BaseException):
+        pass
+
+    root = WorkflowExecution.objects.create(
+        workflow_name='root', status='RUNNING',
+        expires_at=timezone.now()-timedelta(seconds=1),
+    )
+    first = WorkflowExecution.objects.create(workflow_name='first', parent=root, parent_pos=0)
+    second = WorkflowExecution.objects.create(workflow_name='second', parent=root, parent_pos=1, status='RUNNING')
+    grandchild = WorkflowExecution.objects.create(workflow_name='grandchild', parent=second, parent_pos=0, status='RUNNING')
+    waiting = WorkflowExecution.objects.create(workflow_name='waiting', parent=second, parent_pos=1, status='WAITING')
+    tree = [root, first, second, grandchild, waiting]
+    original_statuses = [wf.status for wf in tree]
+    for wf in tree:
+        ActivityTask.objects.create(execution=wf, activity_name=answer._durable_name)
+    claimed = second.activities.get()
+    assert claimed.start()
+    token = claimed.lease_token
+    original_cancel = WorkflowExecution.cancel
+    error = DatabaseError if failure == 'database' else Crash
+
+    def fail_at_grandchild(wf, reason=None):
+        if wf.pk == grandchild.pk:
+            raise error('cascade interrupted')
+        return original_cancel(wf, reason=reason)
+
+    def transition():
+        if operation == 'timeout':
+            Command()._timeout_workflows(timezone.now(), 100)
+        else:
+            root.cancel()
+
+    with patch.object(WorkflowExecution, 'cancel', fail_at_grandchild):
+        with pytest.raises(error):
+            transition()
+    for wf, status in zip(tree, original_statuses):
+        wf.refresh_from_db()
+        assert wf.status == status
+    assert not HistoryEvent.objects.exists()
+    claimed.refresh_from_db()
+    assert claimed.status == 'RUNNING'
+    assert claimed.lease_token == token
+    assert ActivityTask.objects.filter(status='QUEUED').count() == 4
+
+    # The same timeout scan/cancel can retry every transition after rollback.
+    transition()
+    transition()
+    root.refresh_from_db()
+    assert root.status == ('TIMED_OUT' if operation == 'timeout' else 'CANCELED')
+    for wf in tree[1:]:
+        wf.refresh_from_db()
+        assert wf.status == 'CANCELED'
+        assert wf.history.filter(type='workflow_canceled').count() == 1
+    assert ActivityTask.objects.filter(status='FAILED').count() == len(tree)
+    assert HistoryEvent.objects.filter(type='activity_failed').count() == len(tree)
+
+
+def test_undelivered_single_attempt_dispatch_preserves_retry_budget():
+    import subprocess
+    import sys
+    from unittest.mock import Mock
+
+    wf = start(answer_flow)
+    wf.activities.update(max_attempts=1, retry_policy={'maximum_attempts': 1})
+    proc = subprocess.Popen([sys.executable, '-c', 'pass'], stdin=subprocess.PIPE, text=True)
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    proc.control = os.fdopen(read_fd, 'rb', buffering=0)
+    proc.wait(timeout=5)
+    idle, running = [proc], []
+    cmd = Command()
+    try:
+        with patch.object(cmd, '_spawn_follower_proc', return_value=Mock()):
+            cmd._dispatch_due_activities(timezone.now(), 10, idle, running, 100)
+        task = wf.activities.get()
+        assert task.status == 'QUEUED'
+        assert task.attempt == 0
+        assert task.lease_token is None
+        assert task.lease_expires_at is None
+        assert task.after_time <= timezone.now()
+        assert not wf.history.filter(type='activity_failed').exists()
+        execute_activity(task)
+        task.refresh_from_db()
+        assert task.status == 'COMPLETED'
+        assert task.attempt == 1
+        step_workflow(wf)
+        wf.refresh_from_db()
+        assert wf.result == 42
+    finally:
+        proc.control.close()
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+
+
+@pytest.mark.parametrize('previous_attempts', [0, 2])
+def test_claim_release_is_idempotent_and_cannot_touch_a_replacement(previous_attempts):
+    wf = start(answer_flow)
+    wf.activities.update(attempt=previous_attempts)
+    claim = wf.activities.get()
+    assert claim.start()
+    stale = wf.activities.get()
+    after_time = claim.after_time
+    assert claim.release_unstarted_claim()
+    assert claim.status == 'QUEUED'
+    assert claim.attempt == previous_attempts
+    assert claim.after_time == after_time
+    assert not stale.release_unstarted_claim()
+    replacement = wf.activities.get()
+    assert replacement.start()
+    assert replacement.attempt == previous_attempts + 1
+    assert replacement.lease_token != stale.lease_token
+    assert not stale.release_unstarted_claim()
+    assert not stale.mark_completed('late')
+    replacement.refresh_from_db()
+    assert replacement.status == 'RUNNING'
+    assert replacement.attempt == previous_attempts + 1
+    assert not wf.history.filter(type__in=['activity_failed', 'activity_completed']).exists()
+
+
+@pytest.mark.parametrize('completed', [False, True])
+def test_ambiguous_dispatch_error_does_not_refund_started_execution(completed):
+    from unittest.mock import Mock
+
+    wf = start(answer_flow)
+    wf.activities.update(max_attempts=1, retry_policy={'maximum_attempts': 1})
+    proc = Mock()
+    proc.poll.return_value = None
+    def fail_after_receipt():
+        claim = wf.activities.get()
+        if completed:
+            execute_activity(claim, claimed=True)
+        else:
+            wf.activities.update(started_at=timezone.now())
+        raise BrokenPipeError('failure reported after receipt')
+    proc.stdin.flush.side_effect = fail_after_receipt
+    cmd = Command()
+    with patch.object(cmd, '_spawn_follower_proc', return_value=Mock()):
+        cmd._dispatch_due_activities(timezone.now(), 10, [proc], [], 100)
+    task = wf.activities.get()
+    assert task.attempt == 1
+    assert task.status == ('COMPLETED' if completed else 'FAILED')
+    event = 'activity_completed' if completed else 'activity_failed'
+    assert wf.history.filter(type=event).count() == 1
