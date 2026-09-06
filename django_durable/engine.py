@@ -1,11 +1,12 @@
 import json
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Callable
 
-from django.db import transaction
+from django.db import DatabaseError, close_old_connections, transaction
+from django.db.models import Max
 from django.utils import timezone
 
 from .constants import (
@@ -16,23 +17,23 @@ from .constants import (
     HistoryEventType,
 )
 from .exceptions import (
-    ActivityError,
     ActivityCanceled,
+    ActivityError,
     ActivityTimeout,
     NondeterminismError,
     UnknownActivityError,
     UnknownWorkflowError,
     WaitActivityTimeout,
     WaitWorkflowTimeout,
-    WorkflowException,
     WorkflowCanceled,
+    WorkflowException,
     WorkflowTimeout,
 )
-from .models import ActivityTask, HistoryEvent, WorkflowExecution
+from .models import ActivityTask, HistoryEvent, WorkflowExecution, lock_execution
 from .registry import register
-from .retry import compute_backoff
 
 _current_activity = threading.local()
+_PAUSED = object()
 
 
 class NeedsPause(Exception):
@@ -43,6 +44,16 @@ class NeedsPause(Exception):
 class Context:
     execution: WorkflowExecution
     pos: int = 0  # deterministic step counter
+
+    # Count calls per handle separately from command positions for compatibility
+    # with existing replay histories. The first wait retains its legacy identity.
+    wait_counts: dict = field(default_factory=dict)
+
+    def _wait_index(self, kind, handle):
+        key = (kind, handle)
+        index = self.wait_counts.get(key, 0)
+        self.wait_counts[key] = index + 1
+        return index
 
     def _bump(self) -> int:
         p = self.pos
@@ -70,6 +81,8 @@ class Context:
             .last()
         )
         if ev:
+            if ev.details.get('change_id') != change_id:
+                raise NondeterminismError('Version marker does not match history')
             return ev.details.get('version')
         HistoryEvent.objects.create(
             execution=self.execution,
@@ -91,7 +104,7 @@ class Context:
         This method mirrors that behaviour by recording a version marker the
         first time it is reached.  If the workflow history already contains
         events beyond the current call position, we treat the execution as
-        replaying and return ``False`` while recording version ``0``.  New
+        replaying and return ``False`` without consuming a position. New
         executions record version ``1`` and return ``True``.
         """
 
@@ -105,6 +118,8 @@ class Context:
             .last()
         )
         if ev:
+            if ev.details.get('change_id') != f'patch:{change_id}':
+                raise NondeterminismError('Patch marker does not match history')
             self.pos += 1
             return ev.details.get('version', 0) >= 1
 
@@ -119,8 +134,9 @@ class Context:
         has_future = HistoryEvent.objects.filter(
             execution=self.execution,
             pos__gt=self.pos,
+            pos__lt=SPECIAL_EVENT_POS,
         )
-        if has_current.exists() or has_future.exists():
+        if has_current.exists() or has_future.exists() or self._has_unreplayed_wait():
             return False
 
         pos = self._bump()
@@ -131,6 +147,46 @@ class Context:
             details={'change_id': f'patch:{change_id}', 'version': 1},
         )
         return True
+
+    def _has_unreplayed_wait(self):
+        """Wait events also record progress, independently of their storage pos."""
+        waits = HistoryEvent.objects.filter(
+            execution=self.execution,
+            type__in=[
+                HistoryEventType.ACTIVITY_WAIT.value,
+                HistoryEventType.CHILD_WORKFLOW_WAIT.value,
+            ],
+        )
+        for event in waits:
+            if event.type == HistoryEventType.ACTIVITY_WAIT.value:
+                kind = 'activity'
+                handle = event.details.get('handle', event.pos)
+            else:
+                kind = 'workflow'
+                handle = event.details['child_id']
+            index = event.details.get('wait_index', 0)
+            if index < self.wait_counts.get((kind, handle), 0):
+                continue  # This wait was already reached during the current replay.
+            command_pos = event.details.get('command_pos')
+            if command_pos is None:
+                # Legacy waits did not store their logical position. Reconstruct
+                # the command counter from commands recorded before that wait.
+                # External signals and activity/child outcomes do not advance it.
+                previous = HistoryEvent.objects.filter(
+                    execution=self.execution,
+                    id__lt=event.id,
+                    type__in=[
+                        HistoryEventType.ACTIVITY_SCHEDULED.value,
+                        HistoryEventType.CHILD_WORKFLOW_SCHEDULED.value,
+                        HistoryEventType.VERSION_MARKER.value,
+                        HistoryEventType.SIGNAL_WAIT.value,
+                        HistoryEventType.SIGNAL_CONSUMED.value,
+                    ],
+                ).aggregate(pos=Max('pos'))['pos']
+                command_pos = 0 if previous is None else previous + 1
+            if command_pos >= self.pos:
+                return True
+        return False
 
     def deprecate_patch(self, change_id: str):
         """Record that a previously patched section has been removed.
@@ -215,9 +271,28 @@ class Context:
                 )
         return pos
 
+    def _check_wait_deadline(self, event, timeout, completed, exception):
+        if event is None:
+            return
+        timeout = event.details.get('timeout', timeout)
+        if timeout is None:
+            return
+        deadline = event.created_at + timedelta(seconds=float(timeout))
+        # A result committed after the deadline must not change a timed-out
+        # branch when the workflow replays later.
+        if timezone.now() >= deadline and (
+            completed is None or completed.created_at > deadline
+        ):
+            raise exception()
+        if completed is None:
+            wake_at = self.execution.wake_at
+            if wake_at is None or deadline < wake_at:
+                self.execution.wake_at = deadline
+
     def wait_activity(self, handle: int, timeout: float | None = None) -> Any:
         """Wait for a previously started activity and return its result."""
         pos = handle
+        wait_index = self._wait_index('activity', handle)
 
         ev_done = (
             HistoryEvent.objects.filter(
@@ -233,6 +308,19 @@ class Context:
             .order_by('id')
             .last()
         )
+        waits = HistoryEvent.objects.filter(
+            execution=self.execution, type=HistoryEventType.ACTIVITY_WAIT.value
+        )
+        if wait_index == 0:
+            waits = waits.filter(pos=pos)
+        else:
+            waits = waits.filter(
+                pos=SPECIAL_EVENT_POS,
+                details__handle=handle,
+                details__wait_index=wait_index,
+            )
+        ev_wait = waits.order_by('id').last()
+        self._check_wait_deadline(ev_wait, timeout, ev_done, WaitActivityTimeout)
         if ev_done:
             if ev_done.type == HistoryEventType.ACTIVITY_FAILED.value:
                 err = ev_done.details.get('error', ErrorCode.ACTIVITY_FAILED.value)
@@ -253,27 +341,20 @@ class Context:
         if not scheduled:
             raise RuntimeError(f'Unknown activity handle {handle}')
 
-        ev_wait = (
-            HistoryEvent.objects.filter(
-                execution=self.execution,
-                pos=pos,
-                type=HistoryEventType.ACTIVITY_WAIT.value,
-            )
-            .order_by('id')
-            .last()
-        )
         if not ev_wait:
             ev_wait = HistoryEvent.objects.create(
                 execution=self.execution,
                 type=HistoryEventType.ACTIVITY_WAIT.value,
-                pos=pos,
+                pos=pos if wait_index == 0 else SPECIAL_EVENT_POS,
+                details={
+                    'timeout': timeout,
+                    'handle': handle,
+                    'wait_index': wait_index,
+                    'command_pos': self.pos,
+                },
             )
 
-        deadline = None
-        if timeout is not None:
-            deadline = ev_wait.created_at + timedelta(seconds=float(timeout))
-        if deadline and timezone.now() >= deadline:
-            raise WaitActivityTimeout()
+        self._check_wait_deadline(ev_wait, timeout, None, WaitActivityTimeout)
 
         raise NeedsPause()
 
@@ -500,6 +581,21 @@ class Context:
             .order_by('id')
             .last()
         )
+        wait_index = self._wait_index('workflow', handle)
+        waits = HistoryEvent.objects.filter(
+            execution=self.execution,
+            type=HistoryEventType.CHILD_WORKFLOW_WAIT.value,
+            details__child_id=handle,
+        )
+        if wait_index == 0:
+            # Old child waits have no index; preserve their original deadline.
+            waits = waits.exclude(details__has_key='wait_index') | waits.filter(
+                details__wait_index=0
+            )
+        else:
+            waits = waits.filter(details__wait_index=wait_index)
+        ev_wait = waits.order_by('id').last()
+        self._check_wait_deadline(ev_wait, timeout, ev_done, WaitWorkflowTimeout)
         if ev_done:
             if ev_done.type == HistoryEventType.CHILD_WORKFLOW_FAILED.value:
                 err = ev_done.details.get('error', ErrorCode.ACTIVITY_FAILED.value)
@@ -522,28 +618,20 @@ class Context:
         if not scheduled:
             raise RuntimeError(f'Unknown workflow handle {handle}')
 
-        ev_wait = (
-            HistoryEvent.objects.filter(
-                execution=self.execution,
-                type=HistoryEventType.CHILD_WORKFLOW_WAIT.value,
-                details__child_id=handle,
-            )
-            .order_by('id')
-            .last()
-        )
         if not ev_wait:
             ev_wait = HistoryEvent.objects.create(
                 execution=self.execution,
                 type=HistoryEventType.CHILD_WORKFLOW_WAIT.value,
                 pos=SPECIAL_EVENT_POS,
-                details={'child_id': handle},
+                details={
+                    'child_id': handle,
+                    'timeout': timeout,
+                    'wait_index': wait_index,
+                    'command_pos': self.pos,
+                },
             )
 
-        deadline = None
-        if timeout is not None:
-            deadline = ev_wait.created_at + timedelta(seconds=float(timeout))
-        if deadline and timezone.now() >= deadline:
-            raise WaitWorkflowTimeout()
+        self._check_wait_deadline(ev_wait, timeout, None, WaitWorkflowTimeout)
 
         raise NeedsPause()
 
@@ -583,7 +671,7 @@ def _run_workflow_once(exec_obj: WorkflowExecution) -> Any | None:
     try:
         return fn(ctx, **(exec_obj.input or {}))
     except NeedsPause:
-        return None
+        return _PAUSED
 
 
 def _notify_parent(exec_obj: WorkflowExecution, event_type: str, details: dict):
@@ -606,17 +694,29 @@ def _notify_parent(exec_obj: WorkflowExecution, event_type: str, details: dict):
     ).update(status=WorkflowExecution.Status.PENDING)
 
 
+def _finish_outstanding_activities(wf):
+    # Called with the workflow row locked, inside its terminal transaction.
+    for task in wf.activities.filter(
+        status__in=[ActivityTask.Status.QUEUED, ActivityTask.Status.RUNNING]
+    ):
+        task.mark_failed(
+            ErrorCode.WORKFLOW_NOT_RUNNABLE.value, finished_at=wf.finished_at
+        )
+
+
 def step_workflow(exec_obj: WorkflowExecution):
     """Advance a workflow execution by replaying until the next pause or completion."""
     with transaction.atomic():
         try:
-            wf = WorkflowExecution.objects.select_for_update(skip_locked=True).get(
-                pk=exec_obj.pk
-            )
+            wf = lock_execution(exec_obj.pk, skip_locked=True)
         except WorkflowExecution.DoesNotExist:
             return
         if wf.status != WorkflowExecution.Status.PENDING:
             return
+        if wf.expires_at and wf.expires_at <= timezone.now():
+            wf.time_out()
+            return
+        wf.wake_at = None
         if not HistoryEvent.objects.filter(
             execution=wf, type=HistoryEventType.WORKFLOW_STARTED.value
         ).exists():
@@ -639,7 +739,17 @@ def step_workflow(exec_obj: WorkflowExecution):
             wf.status = WorkflowExecution.Status.FAILED
             wf.error = str(e)
             wf.finished_at = timezone.now()
-            wf.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+            wf.wake_at = None
+            wf.save(
+                update_fields=[
+                    'status',
+                    'error',
+                    'finished_at',
+                    'wake_at',
+                    'updated_at',
+                ]
+            )
+            _finish_outstanding_activities(wf)
             _notify_parent(
                 wf,
                 HistoryEventType.CHILD_WORKFLOW_FAILED.value,
@@ -647,9 +757,13 @@ def step_workflow(exec_obj: WorkflowExecution):
             )
             return
 
-        if result is None:
+        if wf.expires_at and wf.expires_at <= timezone.now():
+            wf.time_out()
+            return
+
+        if result is _PAUSED:
             wf.status = WorkflowExecution.Status.RUNNING
-            wf.save(update_fields=['status', 'updated_at'])
+            wf.save(update_fields=['status', 'wake_at', 'updated_at'])
             return
 
         HistoryEvent.objects.create(
@@ -661,7 +775,10 @@ def step_workflow(exec_obj: WorkflowExecution):
         wf.status = WorkflowExecution.Status.COMPLETED
         wf.result = result
         wf.finished_at = timezone.now()
-        wf.save(update_fields=['status', 'result', 'finished_at', 'updated_at'])
+        wf.save(
+            update_fields=['status', 'result', 'finished_at', 'wake_at', 'updated_at']
+        )
+        _finish_outstanding_activities(wf)
         _notify_parent(
             wf,
             HistoryEventType.CHILD_WORKFLOW_COMPLETED.value,
@@ -669,75 +786,103 @@ def step_workflow(exec_obj: WorkflowExecution):
         )
 
 
-def execute_activity(task: ActivityTask):
-    """Run one activity and append completion/failure events."""
-    fn = register.activities.get(task.activity_name)
-
-    # If workflow is not runnable (completed/failed/canceled), don't execute.
-    task.execution.refresh_from_db(fields=['status'])
+def execute_activity(task: ActivityTask, *, claimed=False):
+    """Execute an owned attempt; persist its outcome separately from user code."""
+    if not claimed and not task.start():
+        return
+    if not ActivityTask.objects.filter(
+        pk=task.pk, status=ActivityTask.Status.RUNNING, lease_token=task.lease_token
+    ).exists():
+        return
+    task.execution.refresh_from_db(fields=['status', 'expires_at'])
     if task.execution.is_terminal():
-        error = (
-            ErrorCode.WORKFLOW_CANCELED.value
-            if task.execution.status == WorkflowExecution.Status.CANCELED
-            else ErrorCode.WORKFLOW_NOT_RUNNABLE.value
-        )
-        task.mark_failed(error)
+        task.mark_failed(ErrorCode.WORKFLOW_NOT_RUNNABLE.value)
+        return
+    now = timezone.now()
+    if task.execution.expires_at and task.execution.expires_at <= now:
+        task.execution.time_out()
+        return
+    if task.expires_at and task.expires_at <= now:
+        task.mark_timed_out()
         return
 
-    task.start()
+    now = timezone.now()
+    if not ActivityTask.objects.filter(
+        pk=task.pk,
+        status=ActivityTask.Status.RUNNING,
+        lease_token=task.lease_token,
+        lease_expires_at__gt=now,
+    ).update(started_at=now, heartbeat_at=now):
+        return
 
+    # The dispatcher renews follower leases. Inline execution needs the same
+    # liveness mechanism without requiring user-written activity heartbeats.
+    stopped = threading.Event()
+    renewer = None
+    if not claimed:
+
+        def renew():
+            try:
+                while not stopped.wait(task.lease_duration().total_seconds() / 3):
+                    try:
+                        if not task.renew_lease():
+                            return
+                    except DatabaseError:
+                        close_old_connections()
+            finally:
+                close_old_connections()
+
+        renewer = threading.Thread(target=renew, daemon=True)
+        renewer.start()
     try:
         _current_activity.task_id = str(task.id)
-        if task.activity_name == SLEEP_ACTIVITY_NAME:
-            seconds = (task.args or [0])[0]
-            # Only run when due; worker should fetch only due tasks.
-            result = {'slept': seconds}
+        _current_activity.lease_token = task.lease_token
+        try:
+            if task.activity_name == SLEEP_ACTIVITY_NAME:
+                result = {'slept': (task.args or [0])[0]}
+            else:
+                fn = register.activities.get(task.activity_name)
+                if fn is None:
+                    raise UnknownActivityError(task.activity_name)
+                result = fn(*task.args, **task.kwargs)
+            json.dumps(result)
+        except Exception as exc:
+            non_retry = (task.retry_policy or {}).get('non_retryable_error_types', [])
+            task.retry_or_fail(
+                str(exc),
+                retryable=not isinstance(exc, UnknownActivityError)
+                and type(exc).__name__ not in non_retry,
+            )
         else:
-            if fn is None:
-                raise UnknownActivityError(task.activity_name)
-            result = fn(*task.args, **task.kwargs)
-
-        task.mark_completed(result)
-
-        # Nudge workflow runnable again unless terminal (e.g., canceled)
-        WorkflowExecution.objects.filter(
-            pk=task.execution_id,
-            status__in=[
-                WorkflowExecution.Status.PENDING,
-                WorkflowExecution.Status.RUNNING,
-            ],
-        ).update(status=WorkflowExecution.Status.PENDING)
-
-    except Exception as e:
-        task.error = str(e)
-        policy = task.retry_policy or {}
-        error_type = e.__class__.__name__
-        non_retry = policy.get('non_retryable_error_types', [])
-        max_attempts = policy.get('maximum_attempts', 0)
-        should_retry = error_type not in non_retry and (
-            max_attempts == 0 or task.attempt < max_attempts
-        )
-        if isinstance(e, UnknownActivityError):
-            should_retry = False
-        if should_retry:
-            interval = compute_backoff(policy, task.attempt)
-            task.schedule_retry(interval)
-        else:
-            task.mark_failed(str(e))
+            # Database errors here must roll back the whole transition and leave
+            # the lease recoverable, rather than retry a half-committed result.
+            task.mark_completed(result)
     finally:
         _current_activity.task_id = None
+        _current_activity.lease_token = None
+        stopped.set()
+        if renewer is not None:
+            renewer.join()
 
 
 def activity_heartbeat(details: Any = None):
-    """Record a heartbeat for the currently running activity."""
+    """Record progress only for the current, live activity attempt."""
     task_id = getattr(_current_activity, 'task_id', None)
+    token = getattr(_current_activity, 'lease_token', None)
     if not task_id:
         raise RuntimeError('No activity is currently running')
     now = timezone.now()
     fields = {'heartbeat_at': now}
     if details is not None:
         fields['heartbeat_details'] = details
-    ActivityTask.objects.filter(id=task_id).update(**fields)
+    updated = ActivityTask.objects.filter(
+        id=task_id,
+        status=ActivityTask.Status.RUNNING,
+        lease_token=token,
+        lease_expires_at__gt=now,
+    ).update(**fields)
+    if not updated:
+        raise ActivityCanceled('Activity attempt is no longer current')
 
 
 def cancel_workflow(
@@ -795,6 +940,9 @@ def _start_workflow(
 
 def _run_loop(execution: WorkflowExecution, tick: float = 0.01):
     """Advance the given execution synchronously until completion."""
+    from .management.commands.durable_worker import Command
+
+    scheduler = Command()
     terminal = {
         WorkflowExecution.Status.COMPLETED,
         WorkflowExecution.Status.FAILED,
@@ -803,7 +951,7 @@ def _run_loop(execution: WorkflowExecution, tick: float = 0.01):
     }
     while True:
         now = timezone.now()
-        progressed = False
+        progressed = scheduler._process_timeouts(now, 100)
 
         # Execute any due activities across all workflows. This ensures that
         # child workflow activities also run when using the synchronous API.
@@ -814,6 +962,7 @@ def _run_loop(execution: WorkflowExecution, tick: float = 0.01):
         )
         for task in due:
             execute_activity(task)
+            scheduler._process_timeouts(timezone.now(), 100)
             progressed = True
 
         # Step all runnable workflows (including children) so that parent
@@ -844,9 +993,7 @@ def _run_loop(execution: WorkflowExecution, tick: float = 0.01):
     if execution.status == WorkflowExecution.Status.COMPLETED:
         return execution.result
     if execution.status == WorkflowExecution.Status.CANCELED:
-        raise WorkflowCanceled(
-            execution.error or ErrorCode.WORKFLOW_CANCELED.value
-        )
+        raise WorkflowCanceled(execution.error or ErrorCode.WORKFLOW_CANCELED.value)
     if execution.status == WorkflowExecution.Status.TIMED_OUT:
         raise WorkflowTimeout(execution.error or ErrorCode.WORKFLOW_TIMEOUT.value)
     raise WorkflowException(execution.error or execution.status)

@@ -1,5 +1,6 @@
 """Nox sessions for testing, linting, formatting, and docs."""
 
+import os
 from pathlib import Path
 
 import nox
@@ -10,7 +11,7 @@ nox.options.sessions = ('lint', 'tests', 'docs')
 @nox.session(venv_backend='uv')
 def lint(session: nox.Session) -> None:
     """Run static analysis."""
-    session.install('ruff', 'isort')
+    session.install('ruff~=0.4.10', 'isort~=5.13')
     session.run('ruff', 'check', '.')
     session.run('isort', '--check-only', '.')
 
@@ -18,7 +19,7 @@ def lint(session: nox.Session) -> None:
 @nox.session(venv_backend='uv')
 def format(session: nox.Session) -> None:
     """Format the code."""
-    session.install('ruff', 'isort')
+    session.install('ruff~=0.4.10', 'isort~=5.13')
     session.run('ruff', 'format', '.')
     session.run('isort', '.')
 
@@ -26,15 +27,15 @@ def format(session: nox.Session) -> None:
 @nox.session(venv_backend='uv')
 def tests(session: nox.Session) -> None:
     """Run the test suite."""
-    django = session.env.get('DJANGO')
+    django = session.env.get('DJANGO') or os.environ.get('DJANGO')
     if django:
         session.install(f'django=={django}')
     else:
         session.install('django')
-    session.install('pytest')
+    session.install('pytest~=8.2')
     session.install('.', '--no-deps')
     session.run('python', 'manage.py', 'migrate', '--noinput')
-    session.run('pytest')
+    session.run('python', '-m', 'pytest')
 
 
 @nox.session(venv_backend='uv')

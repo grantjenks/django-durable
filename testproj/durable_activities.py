@@ -108,3 +108,38 @@ def slow_sleep(delay=0.2):
     """Activity that sleeps for a bit to simulate long work."""
     sleep(delay)
     return {"slept": delay}
+
+
+@register.activity(retry_policy=RetryPolicy(maximum_attempts=2, initial_interval=0.01))
+def crash_once():
+    """Exercise actual follower death and stdout isolation in the worker tests."""
+    import os
+    from django_durable.engine import _current_activity
+    from django_durable.models import ActivityTask
+
+    print("activity output is not an acknowledgement", flush=True)
+    task = ActivityTask.objects.get(pk=_current_activity.task_id)
+    if task.attempt == 1:
+        os._exit(1)
+    return {"attempts": task.attempt}
+
+
+@register.activity(retry_policy=RetryPolicy(maximum_attempts=1))
+def noisy_output(delay=0):
+    import logging
+    import os
+    import subprocess
+    import sys
+
+    os.write(1, b'partial OS output')
+    logger = logging.getLogger('durable-output-regression')
+    handler = logging.StreamHandler(sys.stdout)
+    logger.addHandler(handler)
+    try:
+        logger.warning('logging output')
+        subprocess.run([sys.executable, '-c', "import os; os.write(1, b'child output')"], check=True)
+        os.write(1, b'no trailing newline')
+        sleep(delay)
+    finally:
+        logger.removeHandler(handler)
+    return 42

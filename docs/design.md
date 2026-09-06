@@ -27,13 +27,17 @@ This document explains how and why Django Durable works the way it does.
 - Implementation: management command `durable_worker` runs a polling loop that:
   1) marks activity timeouts and heartbeats,
   2) dispatches due activities and runnable workflows to long-lived follower
-     subprocesses via a JSON-over-stdin/stdout protocol.
+     subprocesses via JSON over stdin, with acknowledgements on a dedicated
+     control pipe. Nonblocking framed reads keep partial acknowledgements from
+     blocking the dispatcher; application stdout/stderr go to worker stderr.
 - Isolation: each activity or workflow step runs in a follower process so the
   worker can terminate it if a timeout occurs.
-- Concurrency: run multiple worker processes across hosts; database locks
-  prevent double execution.
+- Concurrency: run multiple worker processes across hosts; atomic claims and
+  attempt tokens coordinate activity ownership. External side effects must be
+  idempotent because execution is at least once.
 - The worker manages a pool of follower subprocesses; `--procs` controls the
-  limit.
+  limit. Final acknowledgements mark retiring followers so the dispatcher
+  replaces them before claiming another task.
 - Scheduling: activities have `after_time` and optional `expires_at`; retries
   use exponential backoff from `RetryPolicy`.
 
@@ -50,14 +54,16 @@ This document explains how and why Django Durable works the way it does.
 
 ## Scaling
 
-- Horizontal: run multiple worker processes across hosts; DB locking prevents double execution.
+- Horizontal: run multiple worker processes across hosts; database transactions
+  serialize workflow replay and activity transitions.
 - Database: ensure appropriate indexes (provided via migrations) and tune connections. For Postgres, consider connection pooling.
 - Timers: the worker calculates sleep time based on the next due activity to minimize idle polling.
 
 ## Reliability
 
 - Crashes during workflow replay: replay is idempotent; a `NeedsPause` control-flow exception indicates when to yield until new checkpoints exist.
-- Crashes during activity: the task remains RUNNING; heartbeat and schedule-to-close timeouts detect stalled tasks and retry or mark them timed out.
+- Crashes during activity: expiring leases recover orphaned attempts; heartbeat
+  timeouts detect stalled progress; schedule-to-close deadlines are terminal.
 - Cancellation: `cancel_workflow` sets status to CANCELED, records events, and fails queued activities to prevent later execution. Child workflows and active activities are canceled automatically.
 - Versioning: `ctx.get_version`, `ctx.patched`, and `ctx.deprecate_patch` enable safe migration of workflow logic while preserving determinism for in-flight executions.
 
@@ -74,3 +80,53 @@ This document explains how and why Django Durable works the way it does.
 4) Worker executes due `ActivityTask` and writes `ACTIVITY_COMPLETED/FAILED/TIMED_OUT` → marks execution PENDING.
 5) Worker replays workflow; when all steps have checkpoints, it reaches the next missing step → repeats until completion.
 
+
+## Recovery and deadline guarantees
+
+Activity delivery is **at least once**. An activity can perform an external side
+effect and crash before its result is committed, so external operations must be
+idempotent (for example, using an application-defined idempotency key).
+
+Each activity attempt is claimed with a unique lease token before dispatch. The
+worker renews the lease while its follower is alive. A replacement worker can
+recover an expired lease, including a task whose original worker crashed before
+sending it to a follower. If sending fails, the dispatcher stops that follower
+and releases its claim without charging an attempt, provided the token still
+matches and execution has not started. Ambiguous failures after execution starts
+use the normal retry policy. Completion, failure, retries, and heartbeats check the
+attempt token so that an older attempt cannot overwrite its replacement's state.
+This protects stored results; it cannot undo an external side effect.
+
+The default lease duration is 30 seconds and can be configured with
+`DURABLE_ACTIVITY_LEASE_SECONDS`. Set it comfortably above the worker's `--tick`
+and expected scheduling/database delays. Application `heartbeat_timeout` remains
+separate: it detects stalled activity progress even while the worker is alive.
+
+Activity terminal state, its history event, and the workflow wakeup commit in one
+transaction. A schedule-to-close timeout covers the entire activity, including
+queueing and retries, and always ends it as `TIMED_OUT`. Heartbeat failures and
+worker loss may retry within that overall deadline and the retry policy.
+Workflow completion or failure also finishes outstanding queued/running activities
+with `workflow_not_runnable`, in the same transaction. Workflow timeout and
+cancellation commit their recursive child cancellation in the same transaction
+as the parent transition. A failed cascade rolls back the parent, descendants,
+activity transitions, and history so the operation can be retried.
+
+Timed activity/child waits persist a workflow wake time. A result committed after
+the wait deadline does not change the timeout branch on later replay. Timing out
+a wait does not cancel the underlying activity or child workflow. Each wait call
+on a handle has its own deterministic identity and deadline; catching a timeout
+and waiting again starts a separate wait without shifting command positions.
+Wait events also retain their logical command position for patch detection;
+legacy positions are reconstructed from earlier commands. Enqueuing a signal
+does not itself count as workflow progress.
+
+`run_workflow()` drives the scheduler inline, including deadlines, and renews
+activity leases while application code runs. It cannot interrupt Python code in
+the caller's thread: deadlines are enforced before/after that code returns. Use
+`start_workflow()` with `durable_worker` for subprocess-enforced interruption.
+
+For upgrades, stop all old workers before applying migration 0008 and restarting
+workers. The migration requeues existing running workflows once, allowing replay
+to rebuild wake times for legacy waits. Older worker versions do not participate
+in the lease protocol.

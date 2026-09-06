@@ -13,7 +13,7 @@ DB_PATH = str(ROOT / "db.sqlite3")
 
 def run_manage(*args, check=True):
     cmd = [sys.executable, MANAGE, *args]
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if check and res.returncode != 0:
         raise AssertionError(
             f"Command failed: {' '.join(cmd)}\nSTDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}"
@@ -64,20 +64,32 @@ def read_activity(exec_id):
 def test_activity_heartbeat_success(tmp_path):
     out = run_manage("durable_start", "testproj.durable_workflows.heartbeat_flow")
     exec_id = out.splitlines()[-1].strip()
-    run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "5")
+    from django_durable.engine import step_workflow
+    from django_durable.models import WorkflowExecution
+
+    wf = WorkflowExecution.objects.get(pk=exec_id)
+    step_workflow(wf)
+    # This test checks successful heartbeat persistence, not sub-second OS
+    # scheduling. Stale heartbeat expiry is covered separately below.
+    wf.activities.update(heartbeat_timeout=5)
+    run_manage("durable_worker", "--batch", "50", "--tick", "0.01",
+               "--iterations", "50", "--procs", "1")
     status, result = read_workflow(exec_id)
-    assert status == "COMPLETED"
+    assert status == "COMPLETED", (status, list(wf.activities.values('status', 'error', 'attempt')))
     assert result == {"ok": True}
     a_status, hb = read_activity(exec_id)
     assert a_status == "COMPLETED"
     assert hb == {"beat": 2}
+    assert wf.activities.get().attempt == 1
 
 
 def test_activity_heartbeat_timeout(tmp_path):
     out = run_manage("durable_start", "testproj.durable_workflows.heartbeat_timeout_flow")
     exec_id = out.splitlines()[-1].strip()
     # Step workflow once to enqueue the activity
-    run_manage("durable_worker", "--batch", "50", "--tick", "0.01", "--iterations", "1")
+    from django_durable.engine import step_workflow
+    from django_durable.models import WorkflowExecution
+    step_workflow(WorkflowExecution.objects.get(pk=exec_id))
 
     # Mark the activity as running with a stale heartbeat
     code = (
@@ -86,6 +98,7 @@ def test_activity_heartbeat_timeout(tmp_path):
         "from datetime import timedelta\n"
         f"t = ActivityTask.objects.get(execution_id='{exec_id}')\n"
         "t.status = 'RUNNING'\n"
+        "t.attempt = 1\n"
         "t.started_at = timezone.now() - timedelta(seconds=5)\n"
         "t.heartbeat_at = t.started_at\n"
         "t.heartbeat_timeout = 0.1\n"

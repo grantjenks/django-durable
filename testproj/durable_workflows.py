@@ -145,3 +145,16 @@ def parent_cascade_workflow(ctx):
     """Parent workflow that starts a child workflow and sleeps."""
     ctx.start_workflow(child_child_workflow)
     ctx.sleep(3600)
+
+
+@register.workflow()
+def crash_once_flow(ctx):
+    from .durable_activities import crash_once
+    return ctx.run_activity(crash_once)
+
+
+@register.workflow()
+def noisy_flow(ctx, delay=0, count=1, activity_timeout=None):
+    from .durable_activities import noisy_output
+    return [ctx.run_activity(noisy_output, delay, schedule_to_close_timeout=activity_timeout)
+            for _ in range(count)]
